@@ -1,0 +1,5 @@
+cache/
+data/
+outputs/*.json
+!outputs/rl_relaxed_full_solution.json
+!outputs/rl_relaxed_full_solution_18524_767.json
