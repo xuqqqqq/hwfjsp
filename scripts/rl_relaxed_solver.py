@@ -44,6 +44,15 @@ def fmt_dt(start_dt: datetime, current_time: int, value: int) -> str:
     return (start_dt + timedelta(minutes=value - current_time)).strftime("%Y/%m/%d %H:%M:%S")
 
 
+def normalize_input_path(path: Path) -> str:
+    return str(path.resolve())
+
+
+def input_signature(path: Path) -> tuple[str, int, int]:
+    stat = path.stat()
+    return (normalize_input_path(path), stat.st_size, stat.st_mtime_ns)
+
+
 @dataclass(frozen=True)
 class CandidateSpec:
     machine_id: str
@@ -122,6 +131,8 @@ class CandidateEval:
 @dataclass
 class InstanceData:
     source_input: str
+    source_size: int
+    source_mtime_ns: int
     current_time: int
     current_dt: str
     start_dt: datetime
@@ -148,19 +159,62 @@ class SetupRowStore:
             self.conn.close()
             self.conn = None
 
+    def _remove_db_files(self) -> None:
+        for suffix in ("", "-wal", "-shm"):
+            target = Path(str(self.db_path) + suffix)
+            if target.exists():
+                target.unlink()
+
+    def _db_matches_input(self, input_path: Path) -> bool:
+        if not self.db_path.exists():
+            return False
+        expected_path, expected_size, expected_mtime = input_signature(input_path)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute("SELECT key, value FROM meta").fetchall()
+        except sqlite3.Error:
+            conn.close()
+            return False
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        meta = {key: value for key, value in rows}
+        return (
+            meta.get("source_input") == expected_path
+            and meta.get("source_size") == str(expected_size)
+            and meta.get("source_mtime_ns") == str(expected_mtime)
+        )
+
     def ensure(self, input_path: Path, force: bool = False) -> None:
-        if force and self.db_path.exists():
-            self.db_path.unlink()
-        if self.db_path.exists():
-            return
+        if force:
+            self.close()
+            self._remove_db_files()
+        elif self.db_path.exists():
+            if self._db_matches_input(input_path):
+                return
+            self.close()
+            print("[setup] cache mismatch detected, rebuilding", flush=True)
+            self._remove_db_files()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=OFF")
             conn.execute("PRAGMA temp_store=MEMORY")
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             conn.execute(
                 "CREATE TABLE setup_rows (from_proc TEXT PRIMARY KEY, payload BLOB NOT NULL)"
+            )
+            sig_path, sig_size, sig_mtime = input_signature(input_path)
+            conn.executemany(
+                "INSERT INTO meta(key, value) VALUES (?, ?)",
+                [
+                    ("source_input", sig_path),
+                    ("source_size", str(sig_size)),
+                    ("source_mtime_ns", str(sig_mtime)),
+                ],
             )
             batch: list[tuple[str, bytes]] = []
             row_count = 0
@@ -330,7 +384,18 @@ def build_instance(root: Path, input_path: Path, cache_path: Path, force: bool =
     if cache_path.exists() and not force and cache_path.stat().st_mtime >= input_path.stat().st_mtime:
         try:
             with cache_path.open("rb") as fh:
-                return pickle.load(fh)
+                cached = pickle.load(fh)
+            cached_path = getattr(cached, "source_input", None)
+            cached_size = getattr(cached, "source_size", None)
+            cached_mtime = getattr(cached, "source_mtime_ns", None)
+            sig_path, sig_size, sig_mtime = input_signature(input_path)
+            if (
+                cached_path == sig_path
+                and (cached_size is None or cached_size == sig_size)
+                and (cached_mtime is None or cached_mtime == sig_mtime)
+            ):
+                return cached
+            print("[instance] cache mismatch detected, rebuilding", flush=True)
         except Exception as exc:
             print(f"[instance] cache reload failed, rebuilding: {exc}", flush=True)
 
@@ -372,7 +437,9 @@ def build_instance(root: Path, input_path: Path, cache_path: Path, force: bool =
                 print(f"[instance] parsed tasks: {count}", flush=True)
 
     instance = InstanceData(
-        source_input=str(input_path),
+        source_input=normalize_input_path(input_path),
+        source_size=input_path.stat().st_size,
+        source_mtime_ns=input_path.stat().st_mtime_ns,
         current_time=int(current_time),
         current_dt=str(current_dt),
         start_dt=parse_dt(str(current_dt)),
