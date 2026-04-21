@@ -15,6 +15,14 @@ Current higher-output candidate under 800 setups:
 - Fully scheduled tasks: `1751 / 1751`
 - Validation errors: `0`
 
+Current best candidate under 800 setups:
+
+- Candidate: `outputs/rl_relaxed_candidate_18598_791.json`
+- Completed weight within horizon 24480: `18598.93`
+- Positive setup transitions: `791`
+- Fully scheduled tasks: `1751 / 1751`
+- Validation errors: `0`
+
 Solver entrypoint:
 
 - `python scripts/rl_relaxed_solver.py solve`

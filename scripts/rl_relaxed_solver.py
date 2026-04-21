@@ -394,17 +394,17 @@ class RelaxedRLScheduler:
         instance: InstanceData,
         setup_store: SetupRowStore,
         lookahead: int = 80,
-        score_weight: float = 320.0,
-        score_density: float = 22000.0,
+        score_weight: float = 329.0,
+        score_density: float = 22850.0,
         score_started: float = 140.0,
-        score_family: float = 350.0,
-        score_setup_fixed: float = 400.0,
-        score_setup_per: float = 4.5,
+        score_family: float = 365.0,
+        score_setup_fixed: float = 420.0,
+        score_setup_per: float = 4.45,
         phase2_started: float = 2200.0,
-        phase2_density: float = 6500.0,
-        phase2_family: float = 500.0,
-        phase2_setup_fixed: float = 520.0,
-        phase2_setup_per: float = 4.5,
+        phase2_density: float = 6660.0,
+        phase2_family: float = 515.0,
+        phase2_setup_fixed: float = 540.0,
+        phase2_setup_per: float = 4.45,
     ) -> None:
         self.instance = instance
         self.setup_store = setup_store
@@ -1089,17 +1089,17 @@ def parse_args() -> argparse.Namespace:
         help="SQLite row-store for sparse setup matrix",
     )
     parser.add_argument("--lookahead", type=int, default=80, help="Dispatch lookahead window in minutes")
-    parser.add_argument("--score-weight", type=float, default=320.0)
-    parser.add_argument("--score-density", type=float, default=22000.0)
+    parser.add_argument("--score-weight", type=float, default=329.0)
+    parser.add_argument("--score-density", type=float, default=22850.0)
     parser.add_argument("--score-started", type=float, default=140.0)
-    parser.add_argument("--score-family", type=float, default=350.0)
-    parser.add_argument("--score-setup-fixed", type=float, default=400.0)
-    parser.add_argument("--score-setup-per", type=float, default=4.5)
+    parser.add_argument("--score-family", type=float, default=365.0)
+    parser.add_argument("--score-setup-fixed", type=float, default=420.0)
+    parser.add_argument("--score-setup-per", type=float, default=4.45)
     parser.add_argument("--phase2-started", type=float, default=2200.0)
-    parser.add_argument("--phase2-density", type=float, default=6500.0)
-    parser.add_argument("--phase2-family", type=float, default=500.0)
-    parser.add_argument("--phase2-setup-fixed", type=float, default=520.0)
-    parser.add_argument("--phase2-setup-per", type=float, default=4.5)
+    parser.add_argument("--phase2-density", type=float, default=6660.0)
+    parser.add_argument("--phase2-family", type=float, default=515.0)
+    parser.add_argument("--phase2-setup-fixed", type=float, default=540.0)
+    parser.add_argument("--phase2-setup-per", type=float, default=4.45)
     parser.add_argument("--rebuild-instance", action="store_true")
     parser.add_argument("--rebuild-setup", action="store_true")
     return parser.parse_args()
