@@ -7,6 +7,14 @@ Current preserved baseline:
 - Fully scheduled tasks: `1751 / 1751`
 - Validation errors: `0`
 
+Current higher-output candidate under 800 setups:
+
+- Candidate: `outputs/rl_relaxed_candidate_18547_784.json`
+- Completed weight within horizon 24480: `18547.29`
+- Positive setup transitions: `784`
+- Fully scheduled tasks: `1751 / 1751`
+- Validation errors: `0`
+
 Solver entrypoint:
 
 - `python scripts/rl_relaxed_solver.py solve`
