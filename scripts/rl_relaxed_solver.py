@@ -1071,6 +1071,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--input", type=Path, default=None, help="Input json path")
     parser.add_argument(
+        "--horizon-override",
+        type=int,
+        default=None,
+        help="Override config.max_output_horizon (minutes) for both scheduling and metrics",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("outputs/rl_relaxed_solution.json"),
@@ -1121,6 +1127,9 @@ def main() -> int:
 
     print(f"[main] input: {input_path}", flush=True)
     instance = build_instance(root, input_path, instance_cache, force=args.rebuild_instance)
+    if args.horizon_override is not None:
+        instance.horizon = int(args.horizon_override)
+        print(f"[main] horizon override: {instance.horizon}", flush=True)
     setup_store = SetupRowStore(setup_db)
     setup_store.ensure(input_path, force=args.rebuild_setup)
 
