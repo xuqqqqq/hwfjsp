@@ -8,3 +8,5 @@ outputs/*.json
 !outputs/rl_relaxed_full_solution_18524_767.json
 !outputs/rl_relaxed_candidate_18547_784.json
 !outputs/rl_relaxed_candidate_18598_791.json
+!outputs/rl_relaxed_candidate_18658_746.json
+!outputs/rl_relaxed_candidate_18640_688.json

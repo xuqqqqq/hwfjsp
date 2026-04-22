@@ -126,6 +126,7 @@ class CandidateEval:
     option_priority: float
     started: bool
     same_family: bool
+    zero_setup: bool
 
 
 @dataclass
@@ -266,6 +267,15 @@ class SetupRowStore:
 
 def detect_input_json(root: Path) -> Path:
     data_dir = root / "data" / "data1"
+    preferred_names = (
+        "实际规模输入数据.json",
+        "input_data.json",
+        "小规模输入数据示例.json",
+    )
+    for name in preferred_names:
+        candidate = data_dir / name
+        if candidate.exists():
+            return candidate
     return max(data_dir.glob("*.json"), key=lambda p: p.stat().st_size)
 
 
@@ -460,32 +470,41 @@ class RelaxedRLScheduler:
         self,
         instance: InstanceData,
         setup_store: SetupRowStore,
-        lookahead: int = 80,
-        score_weight: float = 329.0,
-        score_density: float = 22850.0,
+        lookahead: int = 70,
+        start_guard: int = 720,
+        score_weight: float = 335.0,
+        score_density: float = 23200.0,
         score_started: float = 140.0,
-        score_family: float = 365.0,
-        score_setup_fixed: float = 420.0,
-        score_setup_per: float = 4.45,
+        score_family: float = 340.0,
+        score_progress: float = 0.0,
+        score_zero_setup: float = 380.0,
+        score_setup_fixed: float = 430.0,
+        score_setup_per: float = 4.4,
         phase2_started: float = 2200.0,
-        phase2_density: float = 6660.0,
-        phase2_family: float = 515.0,
+        phase2_density: float = 6800.0,
+        phase2_family: float = 500.0,
+        phase2_progress: float = 0.0,
+        phase2_zero_setup: float = 900.0,
         phase2_setup_fixed: float = 540.0,
-        phase2_setup_per: float = 4.45,
+        phase2_setup_per: float = 4.4,
     ) -> None:
         self.instance = instance
         self.setup_store = setup_store
         self.lookahead = lookahead
-        self.start_guard = 360
+        self.start_guard = start_guard
         self.score_weight = score_weight
         self.score_density = score_density
         self.score_started = score_started
         self.score_family = score_family
+        self.score_progress = score_progress
+        self.score_zero_setup = score_zero_setup
         self.score_setup_fixed = score_setup_fixed
         self.score_setup_per = score_setup_per
         self.phase2_started = phase2_started
         self.phase2_density = phase2_density
         self.phase2_family = phase2_family
+        self.phase2_progress = phase2_progress
+        self.phase2_zero_setup = phase2_zero_setup
         self.phase2_setup_fixed = phase2_setup_fixed
         self.phase2_setup_per = phase2_setup_per
 
@@ -580,11 +599,13 @@ class RelaxedRLScheduler:
         lower, upper = bounds
         setup_time = 0
         same_family = False
+        zero_setup = False
         if not proc.is_batch:
             lower = max(lower, self.machine_free[machine_id])
             setup_time = self.setup_store.get(self.machine_last_proc[machine_id], proc.proc_id)
             lower = max(lower, self.machine_free[machine_id] + setup_time)
             same_family = self.machine_last_family[machine_id] == self.process_family(proc)
+            zero_setup = self.machine_last_proc[machine_id] is not None and setup_time == 0
 
         start = self.fit_after_maintenance(machine_id, lower, candidate.process_time)
         if start > upper:
@@ -603,6 +624,7 @@ class RelaxedRLScheduler:
             option_priority=candidate.priority,
             started=bool(self.task_records[task_id]),
             same_family=same_family,
+            zero_setup=zero_setup,
         )
 
     def batch_choice(self, task_id: str) -> Optional[CandidateEval]:
@@ -664,6 +686,7 @@ class RelaxedRLScheduler:
         task = self.instance.tasks[eval_item.task_id]
         remaining_nb = max(task.optimistic_nonbatch_from[eval_item.idx], 1)
         density = task.weight / remaining_nb
+        progress = eval_item.idx / max(len(task.processes) - 1, 1)
         q_slack = eval_item.upper_bound - eval_item.start
         q_bonus = 0.0 if q_slack >= INF // 2 else 5000.0 / (q_slack + 30.0)
         score = 0.0
@@ -671,6 +694,8 @@ class RelaxedRLScheduler:
         score += density * self.score_density
         score += self.score_started if eval_item.started else 0.0
         score += self.score_family if eval_item.same_family else 0.0
+        score += progress * self.score_progress
+        score += self.score_zero_setup if eval_item.zero_setup else 0.0
         score += q_bonus
         score -= self.score_setup_fixed if eval_item.setup_time > 0 else 0.0
         score -= eval_item.setup_time * self.score_setup_per
@@ -682,12 +707,15 @@ class RelaxedRLScheduler:
     def score_candidate_phase2(self, eval_item: CandidateEval, min_start: int) -> tuple[float, int, int, str]:
         task = self.instance.tasks[eval_item.task_id]
         remaining_nb = max(task.optimistic_nonbatch_from[eval_item.idx], 1)
+        progress = eval_item.idx / max(len(task.processes) - 1, 1)
         q_slack = eval_item.upper_bound - eval_item.start
         q_bonus = 0.0 if q_slack >= INF // 2 else 6000.0 / (q_slack + 30.0)
         score = 0.0
         score += self.phase2_started if eval_item.started else 0.0
         score += (task.weight / remaining_nb) * self.phase2_density
         score += self.phase2_family if eval_item.same_family else 0.0
+        score += progress * self.phase2_progress
+        score += self.phase2_zero_setup if eval_item.zero_setup else 0.0
         score += q_bonus
         score -= self.phase2_setup_fixed if eval_item.setup_time > 0 else 0.0
         score -= eval_item.setup_time * self.phase2_setup_per
@@ -1161,18 +1189,23 @@ def parse_args() -> argparse.Namespace:
         default=Path("cache/setup_rows.sqlite"),
         help="SQLite row-store for sparse setup matrix",
     )
-    parser.add_argument("--lookahead", type=int, default=80, help="Dispatch lookahead window in minutes")
-    parser.add_argument("--score-weight", type=float, default=329.0)
-    parser.add_argument("--score-density", type=float, default=22850.0)
+    parser.add_argument("--lookahead", type=int, default=70, help="Dispatch lookahead window in minutes")
+    parser.add_argument("--start-guard", type=int, default=720, help="Defer starting tasks that cannot finish before horizon minus this slack")
+    parser.add_argument("--score-weight", type=float, default=335.0)
+    parser.add_argument("--score-density", type=float, default=23200.0)
     parser.add_argument("--score-started", type=float, default=140.0)
-    parser.add_argument("--score-family", type=float, default=365.0)
-    parser.add_argument("--score-setup-fixed", type=float, default=420.0)
-    parser.add_argument("--score-setup-per", type=float, default=4.45)
+    parser.add_argument("--score-family", type=float, default=340.0)
+    parser.add_argument("--score-progress", type=float, default=0.0)
+    parser.add_argument("--score-zero-setup", type=float, default=380.0)
+    parser.add_argument("--score-setup-fixed", type=float, default=430.0)
+    parser.add_argument("--score-setup-per", type=float, default=4.4)
     parser.add_argument("--phase2-started", type=float, default=2200.0)
-    parser.add_argument("--phase2-density", type=float, default=6660.0)
-    parser.add_argument("--phase2-family", type=float, default=515.0)
+    parser.add_argument("--phase2-density", type=float, default=6800.0)
+    parser.add_argument("--phase2-family", type=float, default=500.0)
+    parser.add_argument("--phase2-progress", type=float, default=0.0)
+    parser.add_argument("--phase2-zero-setup", type=float, default=900.0)
     parser.add_argument("--phase2-setup-fixed", type=float, default=540.0)
-    parser.add_argument("--phase2-setup-per", type=float, default=4.45)
+    parser.add_argument("--phase2-setup-per", type=float, default=4.4)
     parser.add_argument("--rebuild-instance", action="store_true")
     parser.add_argument("--rebuild-setup", action="store_true")
     return parser.parse_args()
@@ -1206,15 +1239,20 @@ def main() -> int:
                 instance,
                 setup_store,
                 lookahead=args.lookahead,
+                start_guard=args.start_guard,
                 score_weight=args.score_weight,
                 score_density=args.score_density,
                 score_started=args.score_started,
                 score_family=args.score_family,
+                score_progress=args.score_progress,
+                score_zero_setup=args.score_zero_setup,
                 score_setup_fixed=args.score_setup_fixed,
                 score_setup_per=args.score_setup_per,
                 phase2_started=args.phase2_started,
                 phase2_density=args.phase2_density,
                 phase2_family=args.phase2_family,
+                phase2_progress=args.phase2_progress,
+                phase2_zero_setup=args.phase2_zero_setup,
                 phase2_setup_fixed=args.phase2_setup_fixed,
                 phase2_setup_per=args.phase2_setup_per,
             )

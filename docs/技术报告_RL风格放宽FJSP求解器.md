@@ -658,6 +658,22 @@
 - 来自调度经验和 `rl1.md` 的时间惩罚思想
 - 实验上它是最敏感的结构参数之一
 
+### `--start-guard`
+
+作用：
+
+- 在第一阶段更早地推迟那些“现在开工但大概率赶不上 horizon”的新任务
+
+为什么要有：
+
+- 如果过晚启动这些任务，它们会消耗瓶颈机台和 setup 次数，但对 horizon 内产量没有贡献
+- 把它们延后到第二阶段，通常能同时改善产量和 setup
+
+怎么来的：
+
+- 来自后续优化中的经验增强
+- 它本质上是第一阶段的“开工保护带”
+
 ### `--score-weight`
 
 作用：
@@ -717,6 +733,37 @@
 
 - 来自对 setup 表的现象观察
 - 是压 setup 的关键参数之一
+
+### `--score-progress`
+
+作用：
+
+- 奖励那些已经推进了更多工序的任务继续往下排
+
+为什么要有：
+
+- `started` 只区分“是否开过工”，但不能区分“刚开工”和“快做完”
+- 对完整任务产量目标来说，快完工任务更值得优先收口
+
+怎么来的：
+
+- 来自对 `started` 布尔奖励过于粗糙的修正
+
+### `--score-zero-setup`
+
+作用：
+
+- 直接奖励当前候选与该机台上一道工序之间是 `setup=0`
+
+为什么要有：
+
+- `same_family` 只是 setup 模式的代理特征，不一定等价于真实零切换
+- 直接对零 setup 给奖励，比只靠 family 奖励更贴近真实目标
+
+怎么来的：
+
+- 来自后续优化中对高 setup 机台的分析
+- 是本轮提升前沿的关键新参数之一
 
 ### `--score-setup-fixed`
 
@@ -779,6 +826,27 @@
 
 - 修复完整解时若完全不顾 setup，很容易把 setup 指标拉坏
 
+### `--phase2-progress`
+
+作用：
+
+- 第二阶段对“已经做了很多工序的任务”给额外推进奖励
+
+为什么要有：
+
+- 第二阶段常常承担补齐任务的职责，进度奖励能让求解器更快收口临近完成的任务
+
+### `--phase2-zero-setup`
+
+作用：
+
+- 第二阶段直接奖励零 setup 的连续加工
+
+为什么要有：
+
+- 仅靠 `phase2-family` 不够精确
+- 这能防止补齐任务时 setup 指标恶化过快
+
 ### `--phase2-setup-fixed`
 
 作用：
@@ -824,21 +892,29 @@
 默认值是：
 
 ```text
-lookahead = 80
-score_weight = 329.0
-score_density = 22850.0
+lookahead = 70
+start_guard = 720
+score_weight = 335.0
+score_density = 23200.0
 score_started = 140.0
-score_family = 365.0
-score_setup_fixed = 420.0
-score_setup_per = 4.45
+score_family = 340.0
+score_progress = 0.0
+score_zero_setup = 380.0
+score_setup_fixed = 430.0
+score_setup_per = 4.4
 phase2_started = 2200.0
-phase2_density = 6660.0
-phase2_family = 515.0
+phase2_density = 6800.0
+phase2_family = 500.0
+phase2_progress = 0.0
+phase2_zero_setup = 900.0
 phase2_setup_fixed = 540.0
-phase2_setup_per = 4.45
+phase2_setup_per = 4.4
 ```
 
-这些值不是“理论最优值”，而是当前实验前沿上最好的折中点之一。
+这些值不是“理论最优值”，而是当前实验前沿上最好的折中点之一。对应的代表性结果是：
+
+- 产量与 setup 更均衡：`18639.81 / 688`
+- 更偏高产量的候选：`18658.47 / 746`
 
 ## 9. 代码说明
 
