@@ -256,6 +256,18 @@ def strategy_cache_path(instance_cache: Path, path_params: dict[str, Any]) -> Pa
     return instance_cache.with_name(f"{instance_cache.stem}_{digest}{instance_cache.suffix}")
 
 
+def extract_path_ids(instance: Any) -> dict[str, str]:
+    return {task_id: task.path_id for task_id, task in instance.tasks.items()}
+
+
+def summarize_path_changes(path_ids: dict[str, str], baseline_path_ids: dict[str, str]) -> dict[str, Any]:
+    changed = sorted(task_id for task_id, path_id in path_ids.items() if baseline_path_ids.get(task_id) != path_id)
+    return {
+        "path_change_count": len(changed),
+        "path_change_sample": changed[:20],
+    }
+
+
 def run_one(
     root: Path,
     output_dir: Path,
@@ -266,6 +278,7 @@ def run_one(
     params: dict[str, float | int],
     path_params: dict[str, Any],
     horizon: int,
+    baseline_path_ids: dict[str, str],
 ) -> dict[str, Any]:
     cache_path = strategy_cache_path(instance_cache, path_params)
     instance = build_instance(
@@ -290,6 +303,7 @@ def run_one(
         "name": name,
         "params": params,
         "path_params": normalize_path_params(path_params),
+        **summarize_path_changes(extract_path_ids(instance), baseline_path_ids),
         "metrics": metrics,
         "validation": validation,
         "solution": as_rel_path(root, solution_path),
@@ -303,14 +317,14 @@ def write_frontier_md(root: Path, output_dir: Path, frontier: list[dict[str, Any
     lines = [
         f"Auto frontier search for horizon `24480`.",
         "",
-        "| setup_count_positive | completed_weight_within_horizon | run | solution |",
-        "| --- | ---: | --- | --- |",
+        "| setup_count_positive | completed_weight_within_horizon | path_change_count | run | solution |",
+        "| --- | ---: | ---: | --- | --- |",
     ]
     for item in frontier:
         metrics = item["metrics"]
         solution_path = (root / item["solution"]).resolve()
         lines.append(
-            f"| {metrics['setup_count_positive']} | {metrics['completed_weight_within_horizon']:.2f} | "
+            f"| {metrics['setup_count_positive']} | {metrics['completed_weight_within_horizon']:.2f} | {item['path_change_count']} | "
             f"`{item['name']}` | [{Path(item['solution']).name}]({solution_path.as_posix()}:1) |"
         )
     (output_dir / "FRONTIER.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -332,6 +346,7 @@ def main() -> int:
     instance = build_instance(root, input_path, instance_cache, force=False)
     if args.horizon_override is not None:
         instance.horizon = int(args.horizon_override)
+    baseline_path_ids = extract_path_ids(instance)
     setup_store = SetupRowStore(setup_db)
     setup_store.ensure(input_path, force=False)
 
@@ -353,6 +368,7 @@ def main() -> int:
                 dict(BASE_PARAMS),
                 dict(BASE_PATH_PARAMS),
                 instance.horizon,
+                baseline_path_ids,
             )
             print(json.dumps({"baseline": baseline["metrics"], "validation": baseline["validation"]}, ensure_ascii=False, indent=2), flush=True)
             results.append(baseline)
@@ -373,6 +389,7 @@ def main() -> int:
                 params,
                 path_params,
                 instance.horizon,
+                baseline_path_ids,
             )
             print(
                 json.dumps(
@@ -381,6 +398,7 @@ def main() -> int:
                         "anchor": "baseline" if anchor is None or anchor == BASE_PARAMS else "frontier",
                         "path_anchor": "baseline" if path_anchor is None or normalize_path_params(path_anchor) == normalize_path_params(BASE_PATH_PARAMS) else "frontier",
                         "path_params": result["path_params"],
+                        "path_change_count": result["path_change_count"],
                         "metrics": result["metrics"],
                         "validation": result["validation"],
                     },
@@ -408,6 +426,8 @@ def main() -> int:
                     "validation": item["validation"],
                     "params": item["params"],
                     "path_params": item["path_params"],
+                    "path_change_count": item["path_change_count"],
+                    "path_change_sample": item["path_change_sample"],
                 }
                 for item in frontier
             ],
