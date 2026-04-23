@@ -894,7 +894,7 @@ class RelaxedRLScheduler:
                     machine_ops[record.machine_id].append((record.start, record.finish, task.processes[idx].proc_id))
 
         proc_to_family = {}
-        for task_id in kept_task_ids:
+        for task_id in kept_records:
             task = self.instance.tasks[task_id]
             for proc in task.processes:
                 proc_to_family[proc.proc_id] = self.process_family(proc)
@@ -914,11 +914,11 @@ class RelaxedRLScheduler:
 
         self.task_records = new_task_records
         for task_id, task in self.instance.tasks.items():
-            if task_id in kept_task_ids:
-                self.next_idx[task_id] = len(task.processes)
+            prefix_len = len(kept_records.get(task_id, []))
+            self.next_idx[task_id] = prefix_len
+            if prefix_len >= len(task.processes):
                 self.task_status[task_id] = "done"
             else:
-                self.next_idx[task_id] = 0
                 self.task_status[task_id] = "active"
 
     def repair_incomplete_tasks(self) -> None:
@@ -932,6 +932,9 @@ class RelaxedRLScheduler:
 
         self.rebuild_state_with_kept_tasks(kept_task_ids)
 
+        self.run_phase2_completion_loop()
+
+    def run_phase2_completion_loop(self) -> None:
         for task_id in self.instance.tasks:
             if self.task_status[task_id] == "active":
                 self.advance_batch_prefix(task_id, respect_horizon=False)
@@ -975,6 +978,53 @@ class RelaxedRLScheduler:
             self.record_schedule(best)
             self.task_status[best.task_id] = "active"
             self.advance_batch_prefix(best.task_id, respect_horizon=False)
+
+    def find_internal_machine_violations(self) -> list[tuple[str, str, str, str, str]]:
+        entries_by_machine: dict[str, list[tuple[int, int, str, str]]] = defaultdict(list)
+        for task_id, records in self.task_records.items():
+            task = self.instance.tasks[task_id]
+            sorted_records = sorted(records, key=lambda item: int(item.seq))
+            for idx, record in enumerate(sorted_records):
+                if idx >= len(task.processes):
+                    break
+                proc = task.processes[idx]
+                if not proc.is_batch:
+                    entries_by_machine[record.machine_id].append(
+                        (record.start, record.finish, task_id, proc.proc_id)
+                    )
+
+        violations: list[tuple[str, str, str, str, str]] = []
+        for machine_id, entries in entries_by_machine.items():
+            entries.sort()
+            prev_entry: Optional[tuple[int, int, str, str]] = None
+            for entry in entries:
+                if prev_entry is not None:
+                    setup_time = self.setup_store.get(prev_entry[3], entry[3])
+                    if entry[0] < prev_entry[1] + setup_time:
+                        violations.append(
+                            (machine_id, prev_entry[2], prev_entry[3], entry[2], entry[3])
+                        )
+                prev_entry = entry
+        return violations
+
+    def repair_setup_violations(self, max_rounds: int = 3) -> None:
+        for _ in range(max_rounds):
+            violations = self.find_internal_machine_violations()
+            if not violations:
+                return
+            reset_task_ids = {prev_task_id for _m, prev_task_id, _pp, _t, _cp in violations}
+            reset_task_ids.update(task_id for _m, _pt, _pp, task_id, _cp in violations)
+            kept_task_ids = {
+                task_id
+                for task_id, task in self.instance.tasks.items()
+                if len(self.task_records.get(task_id, [])) == len(task.processes)
+                and task_id not in reset_task_ids
+            }
+            if not kept_task_ids and reset_task_ids:
+                # Fall back to the current state rather than wiping everything.
+                return
+            self.rebuild_state_with_kept_tasks(kept_task_ids)
+            self.run_phase2_completion_loop()
 
     def solve(self) -> dict[str, list[ScheduledOp]]:
         for task_id in self.instance.tasks:
@@ -1075,6 +1125,7 @@ class RelaxedRLScheduler:
             self.advance_batch_prefix(best.task_id, respect_horizon=False)
 
         self.repair_incomplete_tasks()
+        self.repair_setup_violations()
         return self.task_records
 
     def metrics(self) -> dict[str, Any]:
