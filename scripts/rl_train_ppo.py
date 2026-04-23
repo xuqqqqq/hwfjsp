@@ -98,6 +98,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bc-epochs", type=int, default=3)
     parser.add_argument("--imitation-steps-per-update", type=int, default=128)
     parser.add_argument("--imitation-coef", type=float, default=0.05)
+    parser.add_argument("--dagger-steps-per-update", type=int, default=0)
+    parser.add_argument("--dagger-epochs", type=int, default=1)
+    parser.add_argument("--teacher-mix", type=float, default=0.3)
     parser.add_argument(
         "--curriculum-task-limits",
         type=str,
@@ -399,6 +402,41 @@ def behavior_clone_pretrain(
     }
 
 
+def collect_dagger_batch(
+    env: DispatchPPOEnv,
+    model: CandidatePolicyValueNet,
+    target_steps: int,
+    device: torch.device,
+    teacher_mix: float,
+) -> ImitationBatch:
+    observations_g: list[np.ndarray] = []
+    observations_c: list[np.ndarray] = []
+    observations_m: list[np.ndarray] = []
+    actions: list[int] = []
+
+    obs = env.reset()
+    while len(actions) < target_steps:
+        teacher_action = env.heuristic_action(obs)
+        if random.random() < teacher_mix:
+            rollout_action = teacher_action
+        else:
+            rollout_action = select_greedy_action(model, obs, device)
+
+        next_obs, _reward, done, _info = env.step(rollout_action)
+        observations_g.append(obs.global_features.copy())
+        observations_c.append(obs.candidate_features.copy())
+        observations_m.append(obs.action_mask.copy())
+        actions.append(teacher_action)
+        obs = env.reset() if done else next_obs
+
+    return ImitationBatch(
+        global_features=torch.as_tensor(np.asarray(observations_g), dtype=torch.float32, device=device),
+        candidate_features=torch.as_tensor(np.asarray(observations_c), dtype=torch.float32, device=device),
+        action_mask=torch.as_tensor(np.asarray(observations_m), dtype=torch.float32, device=device),
+        actions=torch.as_tensor(actions, dtype=torch.long, device=device),
+    )
+
+
 def evaluate_policy(
     env: DispatchPPOEnv,
     model: CandidatePolicyValueNet,
@@ -454,6 +492,8 @@ def main() -> int:
         args.bc_steps = min(args.bc_steps, 64)
         args.bc_epochs = min(args.bc_epochs, 1)
         args.imitation_steps_per_update = min(args.imitation_steps_per_update, 64)
+        args.dagger_steps_per_update = min(args.dagger_steps_per_update, 64)
+        args.dagger_epochs = min(args.dagger_epochs, 1)
         if curriculum_stages:
             curriculum_stages = [min(value, args.task_limit) for value in curriculum_stages]
 
@@ -510,6 +550,7 @@ def main() -> int:
         print(json.dumps({"behavior_clone": {**bc_metrics, **bc_eval_metrics}}, ensure_ascii=False, indent=2), flush=True)
 
     history: list[dict[str, float]] = []
+    best_score = float("-inf")
     try:
         for update_idx in range(1, args.updates + 1):
             stage_task_limit = curriculum_stage_limit(
@@ -546,9 +587,26 @@ def main() -> int:
                 imitation_batch=imitation_batch,
                 imitation_coef=args.imitation_coef,
             )
+            dagger_metrics: dict[str, float] = {}
+            if args.dagger_steps_per_update > 0 and args.dagger_epochs > 0:
+                dagger_batch = collect_dagger_batch(
+                    env,
+                    model,
+                    args.dagger_steps_per_update,
+                    device,
+                    teacher_mix=args.teacher_mix,
+                )
+                dagger_metrics = behavior_clone_pretrain(
+                    model,
+                    optimizer,
+                    dagger_batch,
+                    epochs=args.dagger_epochs,
+                    mini_batch_size=args.mini_batch_size,
+                )
             eval_metrics = evaluate_policy(env, model, device, episodes=2 if args.smoke else 3)
             episode_weight = float(np.mean([info.get("completed_weight", 0.0) for info in episode_infos])) if episode_infos else 0.0
             episode_setup = float(np.mean([info.get("setup_count_positive", 0.0) for info in episode_infos])) if episode_infos else 0.0
+            eval_score = eval_metrics["eval_completed_weight"] - 0.5 * eval_metrics["eval_setup_count"]
 
             record = {
                 "update": float(update_idx),
@@ -556,10 +614,25 @@ def main() -> int:
                 "rollout_completed_weight": round(episode_weight, 3),
                 "rollout_setup_count": round(episode_setup, 3),
                 **train_metrics,
+                **dagger_metrics,
                 **eval_metrics,
+                "eval_score": round(eval_score, 3),
             }
             history.append(record)
             print(json.dumps(record, ensure_ascii=False, indent=2), flush=True)
+
+            if eval_score > best_score:
+                best_score = eval_score
+                torch.save(
+                    {
+                        "model_state": model.state_dict(),
+                        "config": vars(args),
+                        "history": history,
+                        "baseline": heuristic_metrics,
+                        "best_record": record,
+                    },
+                    output_dir / "ppo_phase1_best.pt",
+                )
 
         torch.save(
             {

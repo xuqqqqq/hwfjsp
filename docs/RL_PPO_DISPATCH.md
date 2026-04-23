@@ -19,6 +19,7 @@
   - PPO 训练入口
   - 支持先做 heuristic behavior cloning warm start，再做 PPO 微调
   - 支持 curriculum task-limit 训练和每轮 imitation regularization
+  - 支持 DAgger 风格数据聚合，以及按 `产量 - 0.5 * setup` 保存 best checkpoint
   - 支持 smoke 模式、小规模子集训练、checkpoint 落盘
 
 ## 依赖
@@ -60,6 +61,17 @@ python scripts/rl_train_ppo.py `
   --curriculum-task-limits 64,128,256 `
   --imitation-steps-per-update 128 `
   --imitation-coef 0.05 `
+  --updates 9
+```
+
+如果要加 DAgger：
+
+```powershell
+python scripts/rl_train_ppo.py `
+  --curriculum-task-limits 64,128,256 `
+  --dagger-steps-per-update 128 `
+  --dagger-epochs 1 `
+  --teacher-mix 0.3 `
   --updates 9
 ```
 
