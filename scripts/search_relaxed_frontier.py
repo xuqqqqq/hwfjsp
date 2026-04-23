@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -37,6 +38,15 @@ BASE_PARAMS: dict[str, float | int] = {
     "phase2_setup_per": 4.0,
 }
 
+BASE_PATH_PARAMS: dict[str, Any] = {
+    "path_nonbatch_mult": 3.0,
+    "path_batch_weight": 1.0,
+    "path_wait_weight": 1.0,
+    "path_machine_penalties": {},
+}
+
+PATH_PENALTY_MACHINES = ("汽车板连退线", "汽车板2#连退线")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Search a Pareto frontier around the relaxed solver")
@@ -49,6 +59,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trials", type=int, default=6)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--prefix", type=str, default="auto")
+    parser.add_argument("--anchor-file", type=Path, default=None, help="Previous search_results.json to use as local-search anchors")
+    parser.add_argument("--anchor-count", type=int, default=4, help="How many anchor points to sample from")
+    parser.add_argument("--explore-scale", type=float, default=1.0, help="Scale factor for parameter perturbation around an anchor")
+    parser.add_argument("--skip-baseline", action="store_true", help="Skip re-running the fixed baseline point")
     return parser.parse_args()
 
 
@@ -59,24 +73,132 @@ def as_rel_path(root: Path, path: Path) -> str:
         return str(path.resolve()).replace("\\", "/")
 
 
-def sample_params(rng: random.Random) -> dict[str, float | int]:
-    params = dict(BASE_PARAMS)
-    params["lookahead"] = max(40, min(110, int(BASE_PARAMS["lookahead"]) + rng.randint(-14, 14)))
-    params["start_guard"] = max(120, min(720, int(BASE_PARAMS["start_guard"]) + rng.randint(-180, 180)))
-    params["score_weight"] = float(BASE_PARAMS["score_weight"]) + rng.uniform(-20.0, 20.0)
-    params["score_density"] = float(BASE_PARAMS["score_density"]) + rng.uniform(-2500.0, 2500.0)
-    params["score_started"] = float(BASE_PARAMS["score_started"]) + rng.uniform(-40.0, 60.0)
-    params["score_family"] = float(BASE_PARAMS["score_family"]) + rng.uniform(-140.0, 160.0)
-    params["score_zero_setup"] = max(0.0, float(BASE_PARAMS["score_zero_setup"]) + rng.uniform(-40.0, 200.0))
-    params["score_setup_fixed"] = float(BASE_PARAMS["score_setup_fixed"]) + rng.uniform(-80.0, 90.0)
-    params["score_setup_per"] = max(2.5, float(BASE_PARAMS["score_setup_per"]) + rng.uniform(-0.8, 0.8))
-    params["phase2_started"] = float(BASE_PARAMS["phase2_started"]) + rng.uniform(-350.0, 350.0)
-    params["phase2_density"] = float(BASE_PARAMS["phase2_density"]) + rng.uniform(-1000.0, 1000.0)
-    params["phase2_family"] = float(BASE_PARAMS["phase2_family"]) + rng.uniform(-160.0, 160.0)
-    params["phase2_zero_setup"] = max(0.0, float(BASE_PARAMS["phase2_zero_setup"]) + rng.uniform(-80.0, 240.0))
-    params["phase2_setup_fixed"] = float(BASE_PARAMS["phase2_setup_fixed"]) + rng.uniform(-80.0, 80.0)
-    params["phase2_setup_per"] = max(2.5, float(BASE_PARAMS["phase2_setup_per"]) + rng.uniform(-0.8, 0.8))
+def clamp_int(value: int, lower: int, upper: int) -> int:
+    return max(lower, min(upper, value))
+
+
+def clamp_float(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def sample_params(
+    rng: random.Random,
+    anchor: dict[str, float | int] | None = None,
+    explore_scale: float = 1.0,
+) -> dict[str, float | int]:
+    base = dict(BASE_PARAMS if anchor is None else anchor)
+    scale = max(explore_scale, 0.1)
+    params = dict(base)
+    params["lookahead"] = clamp_int(int(round(float(base["lookahead"]))) + rng.randint(int(round(-14 * scale)), int(round(14 * scale))), 40, 110)
+    params["start_guard"] = clamp_int(int(round(float(base["start_guard"]))) + rng.randint(int(round(-180 * scale)), int(round(180 * scale))), 120, 720)
+    params["score_weight"] = clamp_float(float(base["score_weight"]) + rng.uniform(-20.0, 20.0) * scale, 260.0, 420.0)
+    params["score_density"] = clamp_float(float(base["score_density"]) + rng.uniform(-2500.0, 2500.0) * scale, 18000.0, 28000.0)
+    params["score_started"] = clamp_float(float(base["score_started"]) + rng.uniform(-40.0, 60.0) * scale, 40.0, 260.0)
+    params["score_family"] = clamp_float(float(base["score_family"]) + rng.uniform(-140.0, 160.0) * scale, 120.0, 700.0)
+    params["score_zero_setup"] = clamp_float(float(base["score_zero_setup"]) + rng.uniform(-40.0, 200.0) * scale, 0.0, 500.0)
+    params["score_setup_fixed"] = clamp_float(float(base["score_setup_fixed"]) + rng.uniform(-80.0, 90.0) * scale, 220.0, 620.0)
+    params["score_setup_per"] = clamp_float(float(base["score_setup_per"]) + rng.uniform(-0.8, 0.8) * scale, 2.5, 6.5)
+    params["phase2_started"] = clamp_float(float(base["phase2_started"]) + rng.uniform(-350.0, 350.0) * scale, 1200.0, 3200.0)
+    params["phase2_density"] = clamp_float(float(base["phase2_density"]) + rng.uniform(-1000.0, 1000.0) * scale, 4200.0, 8600.0)
+    params["phase2_family"] = clamp_float(float(base["phase2_family"]) + rng.uniform(-160.0, 160.0) * scale, 180.0, 900.0)
+    params["phase2_zero_setup"] = clamp_float(float(base["phase2_zero_setup"]) + rng.uniform(-80.0, 240.0) * scale, 0.0, 1200.0)
+    params["phase2_setup_fixed"] = clamp_float(float(base["phase2_setup_fixed"]) + rng.uniform(-80.0, 80.0) * scale, 260.0, 760.0)
+    params["phase2_setup_per"] = clamp_float(float(base["phase2_setup_per"]) + rng.uniform(-0.8, 0.8) * scale, 2.5, 6.5)
     return params
+
+
+def normalize_path_params(path_params: dict[str, Any]) -> dict[str, Any]:
+    penalties = {
+        machine: float(value)
+        for machine, value in path_params.get("path_machine_penalties", {}).items()
+        if float(value) > 1e-9
+    }
+    return {
+        "path_nonbatch_mult": float(path_params.get("path_nonbatch_mult", BASE_PATH_PARAMS["path_nonbatch_mult"])),
+        "path_batch_weight": float(path_params.get("path_batch_weight", BASE_PATH_PARAMS["path_batch_weight"])),
+        "path_wait_weight": float(path_params.get("path_wait_weight", BASE_PATH_PARAMS["path_wait_weight"])),
+        "path_machine_penalties": dict(sorted(penalties.items())),
+    }
+
+
+def sample_path_params(
+    rng: random.Random,
+    anchor: dict[str, Any] | None = None,
+    explore_scale: float = 1.0,
+) -> dict[str, Any]:
+    base = normalize_path_params(BASE_PATH_PARAMS if anchor is None else anchor)
+    scale = max(explore_scale, 0.1)
+    result = {
+        "path_nonbatch_mult": clamp_float(base["path_nonbatch_mult"] + rng.uniform(-0.7, 0.8) * scale, 1.5, 5.5),
+        "path_batch_weight": clamp_float(base["path_batch_weight"] + rng.uniform(-0.35, 0.35) * scale, 0.4, 2.2),
+        "path_wait_weight": clamp_float(base["path_wait_weight"] + rng.uniform(-0.35, 0.45) * scale, 0.3, 2.5),
+        "path_machine_penalties": {},
+    }
+    anchor_penalties = base["path_machine_penalties"]
+    penalties: dict[str, float] = {}
+    for machine in PATH_PENALTY_MACHINES:
+        anchor_value = float(anchor_penalties.get(machine, 0.0))
+        candidate_value = clamp_float(anchor_value + rng.uniform(-90.0, 120.0) * scale, 0.0, 420.0)
+        if candidate_value >= 20.0:
+            penalties[machine] = round(candidate_value, 3)
+    result["path_machine_penalties"] = penalties
+    return normalize_path_params(result)
+
+
+def load_anchor_params(anchor_file: Path, anchor_count: int) -> list[dict[str, float | int]]:
+    with anchor_file.open("r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    anchors: list[dict[str, float | int]] = [dict(BASE_PARAMS)]
+    frontier_items = payload.get("frontier", [])
+    sorted_items = sorted(
+        frontier_items,
+        key=lambda item: (
+            -float(item["metrics"]["completed_weight_within_horizon"]),
+            float(item["metrics"]["setup_count_positive"]),
+            item["name"],
+        ),
+    )
+    for item in sorted_items[: max(anchor_count, 0)]:
+        params = item.get("params")
+        if params:
+            anchors.append(params)
+    unique: list[dict[str, float | int]] = []
+    seen: set[str] = set()
+    for item in anchors:
+        key = json.dumps(item, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def load_anchor_path_params(anchor_file: Path, anchor_count: int) -> list[dict[str, Any]]:
+    with anchor_file.open("r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    anchors: list[dict[str, Any]] = [dict(BASE_PATH_PARAMS)]
+    frontier_items = payload.get("frontier", [])
+    sorted_items = sorted(
+        frontier_items,
+        key=lambda item: (
+            -float(item["metrics"]["completed_weight_within_horizon"]),
+            float(item["metrics"]["setup_count_positive"]),
+            item["name"],
+        ),
+    )
+    for item in sorted_items[: max(anchor_count, 0)]:
+        params = item.get("path_params")
+        if params:
+            anchors.append(normalize_path_params(params))
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in anchors:
+        key = json.dumps(normalize_path_params(item), sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(normalize_path_params(item))
+    return unique
 
 
 def is_valid_result(result: dict[str, Any]) -> bool:
@@ -128,14 +250,36 @@ def format_solution_name(result: dict[str, Any]) -> str:
     ).replace(":", "_")
 
 
+def strategy_cache_path(instance_cache: Path, path_params: dict[str, Any]) -> Path:
+    payload = json.dumps(normalize_path_params(path_params), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.md5(payload.encode("utf-8")).hexdigest()[:10]
+    return instance_cache.with_name(f"{instance_cache.stem}_{digest}{instance_cache.suffix}")
+
+
 def run_one(
     root: Path,
     output_dir: Path,
     name: str,
-    instance,
+    input_path: Path,
+    instance_cache: Path,
     setup_store: SetupRowStore,
     params: dict[str, float | int],
+    path_params: dict[str, Any],
+    horizon: int,
 ) -> dict[str, Any]:
+    cache_path = strategy_cache_path(instance_cache, path_params)
+    instance = build_instance(
+        root,
+        input_path,
+        cache_path,
+        force=False,
+        path_nonbatch_mult=float(path_params["path_nonbatch_mult"]),
+        path_batch_weight=float(path_params["path_batch_weight"]),
+        path_wait_weight=float(path_params["path_wait_weight"]),
+        path_machine_penalties=dict(path_params["path_machine_penalties"]),
+        force_path_map={},
+    )
+    instance.horizon = int(horizon)
     scheduler = RelaxedRLScheduler(instance, setup_store, **params)
     task_records = scheduler.solve()
     metrics = scheduler.metrics()
@@ -145,6 +289,7 @@ def run_one(
     result = {
         "name": name,
         "params": params,
+        "path_params": normalize_path_params(path_params),
         "metrics": metrics,
         "validation": validation,
         "solution": as_rel_path(root, solution_path),
@@ -179,6 +324,9 @@ def main() -> int:
     instance_cache = (root / args.instance_cache).resolve() if not args.instance_cache.is_absolute() else args.instance_cache
     setup_db = (root / args.setup_db).resolve() if not args.setup_db.is_absolute() else args.setup_db
     output_dir = (root / args.output_dir).resolve() if not args.output_dir.is_absolute() else args.output_dir
+    anchor_file = None
+    if args.anchor_file is not None:
+        anchor_file = (root / args.anchor_file).resolve() if not args.anchor_file.is_absolute() else args.anchor_file
     output_dir.mkdir(parents=True, exist_ok=True)
 
     instance = build_instance(root, input_path, instance_cache, force=False)
@@ -189,15 +337,58 @@ def main() -> int:
 
     try:
         results: list[dict[str, Any]] = []
-        baseline = run_one(root, output_dir, f"{args.prefix}_baseline", instance, setup_store, dict(BASE_PARAMS))
-        print(json.dumps({"baseline": baseline["metrics"], "validation": baseline["validation"]}, ensure_ascii=False, indent=2), flush=True)
-        results.append(baseline)
+        anchors = [dict(BASE_PARAMS)]
+        path_anchors = [dict(BASE_PATH_PARAMS)]
+        if anchor_file is not None and anchor_file.exists():
+            anchors = load_anchor_params(anchor_file, args.anchor_count)
+            path_anchors = load_anchor_path_params(anchor_file, args.anchor_count)
+        if not args.skip_baseline:
+            baseline = run_one(
+                root,
+                output_dir,
+                f"{args.prefix}_baseline",
+                input_path,
+                instance_cache,
+                setup_store,
+                dict(BASE_PARAMS),
+                dict(BASE_PATH_PARAMS),
+                instance.horizon,
+            )
+            print(json.dumps({"baseline": baseline["metrics"], "validation": baseline["validation"]}, ensure_ascii=False, indent=2), flush=True)
+            results.append(baseline)
 
         for idx in range(1, args.trials + 1):
-            params = sample_params(rng)
+            anchor = anchors[(idx - 1) % len(anchors)] if anchors else None
+            path_anchor = path_anchors[(idx - 1) % len(path_anchors)] if path_anchors else None
+            params = sample_params(rng, anchor=anchor, explore_scale=args.explore_scale)
+            path_params = sample_path_params(rng, anchor=path_anchor, explore_scale=args.explore_scale)
             name = f"{args.prefix}_{idx:02d}"
-            result = run_one(root, output_dir, name, instance, setup_store, params)
-            print(json.dumps({"run": name, "metrics": result["metrics"], "validation": result["validation"]}, ensure_ascii=False, indent=2), flush=True)
+            result = run_one(
+                root,
+                output_dir,
+                name,
+                input_path,
+                instance_cache,
+                setup_store,
+                params,
+                path_params,
+                instance.horizon,
+            )
+            print(
+                json.dumps(
+                    {
+                        "run": name,
+                        "anchor": "baseline" if anchor is None or anchor == BASE_PARAMS else "frontier",
+                        "path_anchor": "baseline" if path_anchor is None or normalize_path_params(path_anchor) == normalize_path_params(BASE_PATH_PARAMS) else "frontier",
+                        "path_params": result["path_params"],
+                        "metrics": result["metrics"],
+                        "validation": result["validation"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                flush=True,
+            )
             results.append(result)
 
         frontier = extract_frontier(results)
@@ -206,6 +397,8 @@ def main() -> int:
             "horizon": instance.horizon,
             "seed": args.seed,
             "trials": args.trials,
+            "explore_scale": args.explore_scale,
+            "anchor_file": str(anchor_file) if anchor_file is not None else None,
             "frontier_size": len(frontier),
             "frontier": [
                 {
@@ -214,6 +407,7 @@ def main() -> int:
                     "metrics": item["metrics"],
                     "validation": item["validation"],
                     "params": item["params"],
+                    "path_params": item["path_params"],
                 }
                 for item in frontier
             ],

@@ -141,6 +141,56 @@ class InstanceData:
     machines: dict[str, MachineSpec]
     transitions: dict[str, dict[str, int]]
     tasks: dict[str, TaskSpec]
+    path_strategy_key: str = "default"
+
+
+def parse_named_float_map(raw: str) -> dict[str, float]:
+    result: dict[str, float] = {}
+    text = raw.strip()
+    if not text:
+        return result
+    for item in text.split(","):
+        chunk = item.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise ValueError(f"Expected name=value pair, got: {chunk}")
+        name, value = chunk.split("=", 1)
+        result[name.strip()] = float(value.strip())
+    return result
+
+
+def parse_named_str_map(raw: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    text = raw.strip()
+    if not text:
+        return result
+    for item in text.split(","):
+        chunk = item.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise ValueError(f"Expected name=value pair, got: {chunk}")
+        name, value = chunk.split("=", 1)
+        result[name.strip()] = value.strip()
+    return result
+
+
+def path_strategy_signature(
+    path_nonbatch_mult: float,
+    path_batch_weight: float,
+    path_wait_weight: float,
+    path_machine_penalties: dict[str, float],
+    force_path_map: dict[str, str],
+) -> str:
+    payload = {
+        "path_nonbatch_mult": round(path_nonbatch_mult, 6),
+        "path_batch_weight": round(path_batch_weight, 6),
+        "path_wait_weight": round(path_wait_weight, 6),
+        "path_machine_penalties": dict(sorted(path_machine_penalties.items())),
+        "force_path_map": dict(sorted(force_path_map.items())),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def register_pickle_compat_aliases() -> None:
@@ -297,23 +347,53 @@ def detect_input_json(root: Path) -> Path:
     return max(data_dir.glob("*.json"), key=lambda p: p.stat().st_size)
 
 
-def choose_path(task_id: str, task_payload: dict[str, Any]) -> str:
+def choose_path(
+    task_id: str,
+    task_payload: dict[str, Any],
+    path_nonbatch_mult: float = 3.0,
+    path_batch_weight: float = 1.0,
+    path_wait_weight: float = 1.0,
+    path_machine_penalties: Optional[dict[str, float]] = None,
+    force_path_map: Optional[dict[str, str]] = None,
+) -> str:
+    if force_path_map and task_id in force_path_map:
+        forced = force_path_map[task_id]
+        if forced not in task_payload["process_path"]:
+            raise ValueError(f"Forced path {forced} not found for task {task_id}")
+        return forced
     best_key: Optional[tuple[float, float, str]] = None
     best_path_id = ""
+    machine_penalties = path_machine_penalties or {}
     for path_id, path in task_payload["process_path"].items():
         non_batch = 0.0
         batch = 0.0
         min_wait = 0.0
+        machine_penalty = 0.0
         for proc in path["process_list"].values():
             min_pt = min(to_int(info["process_time"]) for info in proc["eqp_list"].values())
             if proc["is_batch_type"]:
                 batch += min_pt
             else:
                 non_batch += min_pt
+            if machine_penalties:
+                machine_penalty += min(
+                    machine_penalties.get(machine_id, 0.0)
+                    for machine_id in proc["eqp_list"].keys()
+                )
         for qtime in path.get("qtime_info", {}).values():
             if qtime["min_process_interval"] is not None:
                 min_wait += float(qtime["min_process_interval"])
-        key = (non_batch * 3.0 + batch + min_wait, non_batch + batch + min_wait, path_id)
+        weighted_primary = (
+            non_batch * path_nonbatch_mult
+            + batch * path_batch_weight
+            + min_wait * path_wait_weight
+            + machine_penalty
+        )
+        key = (
+            weighted_primary,
+            non_batch + batch + min_wait + machine_penalty,
+            path_id,
+        )
         if best_key is None or key < best_key:
             best_key = key
             best_path_id = path_id
@@ -322,8 +402,24 @@ def choose_path(task_id: str, task_payload: dict[str, Any]) -> str:
     return best_path_id
 
 
-def build_task_spec(task_id: str, task_payload: dict[str, Any]) -> TaskSpec:
-    path_id = choose_path(task_id, task_payload)
+def build_task_spec(
+    task_id: str,
+    task_payload: dict[str, Any],
+    path_nonbatch_mult: float = 3.0,
+    path_batch_weight: float = 1.0,
+    path_wait_weight: float = 1.0,
+    path_machine_penalties: Optional[dict[str, float]] = None,
+    force_path_map: Optional[dict[str, str]] = None,
+) -> TaskSpec:
+    path_id = choose_path(
+        task_id,
+        task_payload,
+        path_nonbatch_mult=path_nonbatch_mult,
+        path_batch_weight=path_batch_weight,
+        path_wait_weight=path_wait_weight,
+        path_machine_penalties=path_machine_penalties,
+        force_path_map=force_path_map,
+    )
     path = task_payload["process_path"][path_id]
     process_order = tuple(sorted(path["process_list"].keys(), key=lambda x: int(x)))
     seq_to_idx = {seq: idx for idx, seq in enumerate(process_order)}
@@ -408,7 +504,24 @@ def build_task_spec(task_id: str, task_payload: dict[str, Any]) -> TaskSpec:
     )
 
 
-def build_instance(root: Path, input_path: Path, cache_path: Path, force: bool = False) -> InstanceData:
+def build_instance(
+    root: Path,
+    input_path: Path,
+    cache_path: Path,
+    force: bool = False,
+    path_nonbatch_mult: float = 3.0,
+    path_batch_weight: float = 1.0,
+    path_wait_weight: float = 1.0,
+    path_machine_penalties: Optional[dict[str, float]] = None,
+    force_path_map: Optional[dict[str, str]] = None,
+) -> InstanceData:
+    strategy_key = path_strategy_signature(
+        path_nonbatch_mult=path_nonbatch_mult,
+        path_batch_weight=path_batch_weight,
+        path_wait_weight=path_wait_weight,
+        path_machine_penalties=path_machine_penalties or {},
+        force_path_map=force_path_map or {},
+    )
     if cache_path.exists() and not force and cache_path.stat().st_mtime >= input_path.stat().st_mtime:
         try:
             register_pickle_compat_aliases()
@@ -417,11 +530,13 @@ def build_instance(root: Path, input_path: Path, cache_path: Path, force: bool =
             cached_path = getattr(cached, "source_input", None)
             cached_size = getattr(cached, "source_size", None)
             cached_mtime = getattr(cached, "source_mtime_ns", None)
+            cached_strategy_key = getattr(cached, "path_strategy_key", "default")
             sig_path, sig_size, sig_mtime = input_signature(input_path)
             if (
                 cached_path == sig_path
                 and (cached_size is None or cached_size == sig_size)
                 and (cached_mtime is None or cached_mtime == sig_mtime)
+                and cached_strategy_key == strategy_key
             ):
                 return cached
             print("[instance] cache mismatch detected, rebuilding", flush=True)
@@ -460,7 +575,15 @@ def build_instance(root: Path, input_path: Path, cache_path: Path, force: bool =
     count = 0
     with input_path.open("rb") as fh:
         for task_id, payload in ijson.kvitems(fh, "task"):
-            tasks[task_id] = build_task_spec(task_id, payload)
+            tasks[task_id] = build_task_spec(
+                task_id,
+                payload,
+                path_nonbatch_mult=path_nonbatch_mult,
+                path_batch_weight=path_batch_weight,
+                path_wait_weight=path_wait_weight,
+                path_machine_penalties=path_machine_penalties,
+                force_path_map=force_path_map,
+            )
             count += 1
             if count % 250 == 0:
                 print(f"[instance] parsed tasks: {count}", flush=True)
@@ -476,6 +599,7 @@ def build_instance(root: Path, input_path: Path, cache_path: Path, force: bool =
         machines=machines,
         transitions=transitions,
         tasks=tasks,
+        path_strategy_key=strategy_key,
     )
 
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1208,6 +1332,21 @@ def parse_args() -> argparse.Namespace:
         default=Path("cache/setup_rows.sqlite"),
         help="SQLite row-store for sparse setup matrix",
     )
+    parser.add_argument("--path-nonbatch-mult", type=float, default=3.0, help="Path selection weight on non-batch processing time")
+    parser.add_argument("--path-batch-weight", type=float, default=1.0, help="Path selection weight on batch processing time")
+    parser.add_argument("--path-wait-weight", type=float, default=1.0, help="Path selection weight on minimum qtime waits")
+    parser.add_argument(
+        "--path-machine-penalty",
+        type=str,
+        default="",
+        help="Comma-separated machine=penalty pairs applied during path selection",
+    )
+    parser.add_argument(
+        "--force-path",
+        type=str,
+        default="",
+        help="Comma-separated task_id=path_id overrides for path selection",
+    )
     parser.add_argument("--lookahead", type=int, default=70, help="Dispatch lookahead window in minutes")
     parser.add_argument("--start-guard", type=int, default=720, help="Defer starting tasks that cannot finish before horizon minus this slack")
     parser.add_argument("--score-weight", type=float, default=335.0)
@@ -1243,9 +1382,42 @@ def main() -> int:
     setup_db = (
         (root / args.setup_db).resolve() if not args.setup_db.is_absolute() else args.setup_db
     )
+    path_machine_penalties = parse_named_float_map(args.path_machine_penalty)
+    force_path_map = parse_named_str_map(args.force_path)
 
     print(f"[main] input: {input_path}", flush=True)
-    instance = build_instance(root, input_path, instance_cache, force=args.rebuild_instance)
+    if path_machine_penalties or force_path_map or any(
+        value != default
+        for value, default in (
+            (args.path_nonbatch_mult, 3.0),
+            (args.path_batch_weight, 1.0),
+            (args.path_wait_weight, 1.0),
+        )
+    ):
+        print(
+            json.dumps(
+                {
+                    "path_nonbatch_mult": args.path_nonbatch_mult,
+                    "path_batch_weight": args.path_batch_weight,
+                    "path_wait_weight": args.path_wait_weight,
+                    "path_machine_penalty": path_machine_penalties,
+                    "force_path": force_path_map,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+    instance = build_instance(
+        root,
+        input_path,
+        instance_cache,
+        force=args.rebuild_instance,
+        path_nonbatch_mult=args.path_nonbatch_mult,
+        path_batch_weight=args.path_batch_weight,
+        path_wait_weight=args.path_wait_weight,
+        path_machine_penalties=path_machine_penalties,
+        force_path_map=force_path_map,
+    )
     if args.horizon_override is not None:
         instance.horizon = int(args.horizon_override)
         print(f"[main] horizon override: {instance.horizon}", flush=True)
