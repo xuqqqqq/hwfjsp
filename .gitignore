@@ -10,3 +10,12 @@ outputs/*.json
 !outputs/rl_relaxed_candidate_18598_791.json
 !outputs/rl_relaxed_candidate_18658_746.json
 !outputs/rl_relaxed_candidate_18640_688.json
+.omx/
+.codex/*
+!.codex/agents/
+!.codex/agents/**
+!.codex/skills/
+!.codex/skills/**
+.codex/skills/.system/**
+!.codex/prompts/
+!.codex/prompts/**
