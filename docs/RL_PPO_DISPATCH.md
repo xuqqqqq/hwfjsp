@@ -18,6 +18,7 @@
 - `scripts/rl_train_ppo.py`
   - PPO 训练入口
   - 支持先做 heuristic behavior cloning warm start，再做 PPO 微调
+  - 支持 curriculum task-limit 训练和每轮 imitation regularization
   - 支持 smoke 模式、小规模子集训练、checkpoint 落盘
 
 ## 依赖
@@ -52,9 +53,20 @@ python scripts/rl_train_ppo.py `
   --updates 10
 ```
 
+如果想逐步放大任务规模：
+
+```powershell
+python scripts/rl_train_ppo.py `
+  --curriculum-task-limits 64,128,256 `
+  --imitation-steps-per-update 128 `
+  --imitation-coef 0.05 `
+  --updates 9
+```
+
 ## 这版的边界
 
 - 还没有把 phase-2 补全也纳入 RL。
 - 还没有做路径选择策略网络。
 - 当前奖励仍然是工程化 shaped reward，不是最终业务指标的唯一来源。
 - 这版更像“能真正开始训练的底座”，不是已经打赢当前最强启发式的最终体。
+- 目前更现实的目标是：先在子算例上稳定贴住 heuristic baseline，再逐步扩大到全实例。

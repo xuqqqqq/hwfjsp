@@ -96,6 +96,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mini-batch-size", type=int, default=128)
     parser.add_argument("--bc-steps", type=int, default=512)
     parser.add_argument("--bc-epochs", type=int, default=3)
+    parser.add_argument("--imitation-steps-per-update", type=int, default=128)
+    parser.add_argument("--imitation-coef", type=float, default=0.05)
+    parser.add_argument(
+        "--curriculum-task-limits",
+        type=str,
+        default="",
+        help="Comma-separated task limits, e.g. 64,128,256. Updates are split evenly across stages.",
+    )
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-ratio", type=float, default=0.2)
@@ -115,6 +123,25 @@ def tensorize_observation(observation: DispatchObservation, device: torch.device
     candidate_tensor = torch.as_tensor(observation.candidate_features, dtype=torch.float32, device=device)
     mask_tensor = torch.as_tensor(observation.action_mask, dtype=torch.float32, device=device)
     return global_tensor, candidate_tensor, mask_tensor
+
+
+def parse_curriculum(task_limits: str) -> list[int]:
+    if not task_limits.strip():
+        return []
+    values = []
+    for item in task_limits.split(","):
+        value = int(item.strip())
+        if value <= 0:
+            raise ValueError(f"Invalid curriculum task limit: {item}")
+        values.append(value)
+    return values
+
+
+def curriculum_stage_limit(stages: list[int], update_idx: int, total_updates: int, default_limit: int) -> int:
+    if not stages:
+        return default_limit
+    stage_idx = min(((update_idx - 1) * len(stages)) // max(total_updates, 1), len(stages) - 1)
+    return stages[stage_idx]
 
 
 def select_action(
@@ -230,6 +257,8 @@ def ppo_update(
     clip_ratio: float,
     entropy_coef: float,
     value_coef: float,
+    imitation_batch: Optional[ImitationBatch] = None,
+    imitation_coef: float = 0.0,
 ) -> dict[str, float]:
     advantages = batch.advantages
     advantages = (advantages - advantages.mean()) / advantages.std().clamp_min(1e-6)
@@ -243,9 +272,16 @@ def ppo_update(
         advantages=advantages,
     )
 
-    metrics = {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+    metrics = {
+        "loss": 0.0,
+        "policy_loss": 0.0,
+        "value_loss": 0.0,
+        "entropy": 0.0,
+        "imitation_loss": 0.0,
+    }
     total_steps = batch.actions.size(0)
     indices = np.arange(total_steps)
+    imitation_total = 0 if imitation_batch is None else imitation_batch.actions.size(0)
 
     for _ in range(ppo_epochs):
         np.random.shuffle(indices)
@@ -265,6 +301,20 @@ def ppo_update(
             policy_loss = -torch.min(unclipped, clipped).mean()
             value_loss = torch.nn.functional.mse_loss(values, batch.returns[batch_idx])
             loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
+            imitation_loss = torch.tensor(0.0, device=batch.actions.device)
+            if imitation_batch is not None and imitation_coef > 0.0 and imitation_total > 0:
+                imit_idx = np.random.randint(0, imitation_total, size=len(batch_idx))
+                imit_idx_t = torch.as_tensor(imit_idx, dtype=torch.long, device=batch.actions.device)
+                imit_logits, _ = model(
+                    imitation_batch.global_features[imit_idx_t],
+                    imitation_batch.candidate_features[imit_idx_t],
+                    imitation_batch.action_mask[imit_idx_t],
+                )
+                imitation_loss = torch.nn.functional.cross_entropy(
+                    imit_logits,
+                    imitation_batch.actions[imit_idx_t],
+                )
+                loss = loss + imitation_coef * imitation_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -275,6 +325,7 @@ def ppo_update(
             metrics["policy_loss"] += float(policy_loss.item())
             metrics["value_loss"] += float(value_loss.item())
             metrics["entropy"] += float(entropy.item())
+            metrics["imitation_loss"] += float(imitation_loss.item())
 
     denom = max((ppo_epochs * math.ceil(total_steps / mini_batch_size)), 1)
     return {key: round(value / denom, 6) for key, value in metrics.items()}
@@ -393,6 +444,7 @@ def heuristic_rollout(env: DispatchPPOEnv, episodes: int = 3) -> dict[str, float
 
 def main() -> int:
     args = parse_args()
+    curriculum_stages = parse_curriculum(args.curriculum_task_limits)
     if args.smoke:
         args.task_limit = min(args.task_limit, 64)
         args.decision_budget = min(args.decision_budget, 64)
@@ -401,6 +453,9 @@ def main() -> int:
         args.ppo_epochs = min(args.ppo_epochs, 2)
         args.bc_steps = min(args.bc_steps, 64)
         args.bc_epochs = min(args.bc_epochs, 1)
+        args.imitation_steps_per_update = min(args.imitation_steps_per_update, 64)
+        if curriculum_stages:
+            curriculum_stages = [min(value, args.task_limit) for value in curriculum_stages]
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -457,6 +512,20 @@ def main() -> int:
     history: list[dict[str, float]] = []
     try:
         for update_idx in range(1, args.updates + 1):
+            stage_task_limit = curriculum_stage_limit(
+                curriculum_stages,
+                update_idx,
+                args.updates,
+                args.task_limit,
+            )
+            env.task_limit = stage_task_limit
+            imitation_batch = None
+            if args.imitation_steps_per_update > 0 and args.imitation_coef > 0.0:
+                imitation_batch = collect_imitation_batch(
+                    env,
+                    args.imitation_steps_per_update,
+                    device,
+                )
             batch, episode_infos = rollout_policy(
                 env,
                 model,
@@ -474,6 +543,8 @@ def main() -> int:
                 clip_ratio=args.clip_ratio,
                 entropy_coef=args.entropy_coef,
                 value_coef=args.value_coef,
+                imitation_batch=imitation_batch,
+                imitation_coef=args.imitation_coef,
             )
             eval_metrics = evaluate_policy(env, model, device, episodes=2 if args.smoke else 3)
             episode_weight = float(np.mean([info.get("completed_weight", 0.0) for info in episode_infos])) if episode_infos else 0.0
@@ -481,6 +552,7 @@ def main() -> int:
 
             record = {
                 "update": float(update_idx),
+                "task_limit": float(stage_task_limit),
                 "rollout_completed_weight": round(episode_weight, 3),
                 "rollout_setup_count": round(episode_setup, 3),
                 **train_metrics,
