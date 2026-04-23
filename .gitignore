@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .idea/
 outputs/*.json
+outputs/auto_frontier_*/
 outputs/rl_runs/
 outputs/*.pt
 outputs/*.pth
