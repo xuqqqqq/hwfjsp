@@ -110,9 +110,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-ratio", type=float, default=0.2)
+    parser.add_argument("--target-kl", type=float, default=0.02)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--entropy-coef", type=float, default=0.01)
     parser.add_argument("--value-coef", type=float, default=0.5)
+    parser.add_argument("--eval-setup-score-weight", type=float, default=0.5)
+    parser.add_argument("--reward-weight-scale", type=float, default=100.0)
+    parser.add_argument("--reward-setup-penalty", type=float, default=6.0)
+    parser.add_argument("--reward-delay-penalty", type=float, default=0.2)
+    parser.add_argument("--reward-late-penalty", type=float, default=12.0)
+    parser.add_argument("--reward-same-family-bonus", type=float, default=0.5)
+    parser.add_argument("--reward-zero-setup-bonus", type=float, default=0.75)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--device", choices=["cpu"], default="cpu")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/rl_runs"))
@@ -258,6 +266,7 @@ def ppo_update(
     ppo_epochs: int,
     mini_batch_size: int,
     clip_ratio: float,
+    target_kl: float,
     entropy_coef: float,
     value_coef: float,
     imitation_batch: Optional[ImitationBatch] = None,
@@ -281,12 +290,16 @@ def ppo_update(
         "value_loss": 0.0,
         "entropy": 0.0,
         "imitation_loss": 0.0,
+        "approx_kl": 0.0,
     }
     total_steps = batch.actions.size(0)
     indices = np.arange(total_steps)
     imitation_total = 0 if imitation_batch is None else imitation_batch.actions.size(0)
+    stop_early = False
+    epochs_run = 0
 
     for _ in range(ppo_epochs):
+        epochs_run += 1
         np.random.shuffle(indices)
         for start in range(0, total_steps, mini_batch_size):
             batch_idx = indices[start : start + mini_batch_size]
@@ -299,6 +312,7 @@ def ppo_update(
             new_log_probs = dist.log_prob(batch.actions[batch_idx])
             entropy = dist.entropy().mean()
             ratio = torch.exp(new_log_probs - batch.log_probs[batch_idx])
+            approx_kl = (batch.log_probs[batch_idx] - new_log_probs).mean()
             unclipped = ratio * batch.advantages[batch_idx]
             clipped = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * batch.advantages[batch_idx]
             policy_loss = -torch.min(unclipped, clipped).mean()
@@ -329,9 +343,19 @@ def ppo_update(
             metrics["value_loss"] += float(value_loss.item())
             metrics["entropy"] += float(entropy.item())
             metrics["imitation_loss"] += float(imitation_loss.item())
+            metrics["approx_kl"] += float(approx_kl.item())
 
-    denom = max((ppo_epochs * math.ceil(total_steps / mini_batch_size)), 1)
-    return {key: round(value / denom, 6) for key, value in metrics.items()}
+            if target_kl > 0.0 and float(approx_kl.item()) > target_kl:
+                stop_early = True
+                break
+        if stop_early:
+            break
+
+    denom = max((epochs_run * math.ceil(total_steps / mini_batch_size)), 1)
+    reduced = {key: round(value / denom, 6) for key, value in metrics.items()}
+    reduced["ppo_epochs_ran"] = float(epochs_run)
+    reduced["early_stop_kl"] = 1.0 if stop_early else 0.0
+    return reduced
 
 
 def collect_imitation_batch(
@@ -525,6 +549,12 @@ def main() -> int:
         start_guard=args.start_guard,
         decision_budget=args.decision_budget,
         seed=args.seed,
+        reward_weight_scale=args.reward_weight_scale,
+        reward_setup_penalty=args.reward_setup_penalty,
+        reward_delay_penalty=args.reward_delay_penalty,
+        reward_late_penalty=args.reward_late_penalty,
+        reward_same_family_bonus=args.reward_same_family_bonus,
+        reward_zero_setup_bonus=args.reward_zero_setup_bonus,
     )
 
     obs = env.reset()
@@ -582,6 +612,7 @@ def main() -> int:
                 ppo_epochs=args.ppo_epochs,
                 mini_batch_size=args.mini_batch_size,
                 clip_ratio=args.clip_ratio,
+                target_kl=args.target_kl,
                 entropy_coef=args.entropy_coef,
                 value_coef=args.value_coef,
                 imitation_batch=imitation_batch,
@@ -606,7 +637,7 @@ def main() -> int:
             eval_metrics = evaluate_policy(env, model, device, episodes=2 if args.smoke else 3)
             episode_weight = float(np.mean([info.get("completed_weight", 0.0) for info in episode_infos])) if episode_infos else 0.0
             episode_setup = float(np.mean([info.get("setup_count_positive", 0.0) for info in episode_infos])) if episode_infos else 0.0
-            eval_score = eval_metrics["eval_completed_weight"] - 0.5 * eval_metrics["eval_setup_count"]
+            eval_score = eval_metrics["eval_completed_weight"] - args.eval_setup_score_weight * eval_metrics["eval_setup_count"]
 
             record = {
                 "update": float(update_idx),

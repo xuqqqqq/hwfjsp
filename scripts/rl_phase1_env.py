@@ -299,6 +299,12 @@ class DispatchPPOEnv:
         start_guard: int = 360,
         decision_budget: int = 512,
         seed: int = 0,
+        reward_weight_scale: float = 100.0,
+        reward_setup_penalty: float = 6.0,
+        reward_delay_penalty: float = 0.2,
+        reward_late_penalty: float = 12.0,
+        reward_same_family_bonus: float = 0.5,
+        reward_zero_setup_bonus: float = 0.75,
     ) -> None:
         self.full_instance = full_instance
         self.setup_store = setup_store
@@ -309,6 +315,12 @@ class DispatchPPOEnv:
         self.start_guard = start_guard
         self.decision_budget = decision_budget
         self.rng = random.Random(seed)
+        self.reward_weight_scale = reward_weight_scale
+        self.reward_setup_penalty = reward_setup_penalty
+        self.reward_delay_penalty = reward_delay_penalty
+        self.reward_late_penalty = reward_late_penalty
+        self.reward_same_family_bonus = reward_same_family_bonus
+        self.reward_zero_setup_bonus = reward_zero_setup_bonus
 
         self.scheduler: Optional[Phase1DispatchScheduler] = None
         self.current_candidates: list[CandidateEval] = []
@@ -324,6 +336,12 @@ class DispatchPPOEnv:
             lookahead=self.lookahead,
             start_guard=self.start_guard,
             max_candidates=self.max_candidates,
+            reward_weight_scale=self.reward_weight_scale,
+            reward_setup_penalty=self.reward_setup_penalty,
+            reward_delay_penalty=self.reward_delay_penalty,
+            reward_late_penalty=self.reward_late_penalty,
+            reward_same_family_bonus=self.reward_same_family_bonus,
+            reward_zero_setup_bonus=self.reward_zero_setup_bonus,
         )
         self.scheduler.bootstrap()
         self.decision_count = 0
