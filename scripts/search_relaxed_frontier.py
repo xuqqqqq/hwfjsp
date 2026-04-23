@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anchor-count", type=int, default=4, help="How many anchor points to sample from")
     parser.add_argument("--explore-scale", type=float, default=1.0, help="Scale factor for parameter perturbation around an anchor")
     parser.add_argument("--skip-baseline", action="store_true", help="Skip re-running the fixed baseline point")
+    parser.add_argument(
+        "--force-path",
+        type=str,
+        default="",
+        help="Comma-separated task_id=path_id overrides applied to every search run",
+    )
     return parser.parse_args()
 
 
@@ -119,6 +125,22 @@ def normalize_path_params(path_params: dict[str, Any]) -> dict[str, Any]:
         "path_wait_weight": float(path_params.get("path_wait_weight", BASE_PATH_PARAMS["path_wait_weight"])),
         "path_machine_penalties": dict(sorted(penalties.items())),
     }
+
+
+def parse_force_path(force_path_arg: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for chunk in (part.strip() for part in force_path_arg.split(",")):
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            raise ValueError(f"Invalid force-path override: {chunk}")
+        task_id, path_id = chunk.split("=", 1)
+        task_id = task_id.strip()
+        path_id = path_id.strip()
+        if not task_id or not path_id:
+            raise ValueError(f"Invalid force-path override: {chunk}")
+        mapping[task_id] = path_id
+    return mapping
 
 
 def sample_path_params(
@@ -250,8 +272,16 @@ def format_solution_name(result: dict[str, Any]) -> str:
     ).replace(":", "_")
 
 
-def strategy_cache_path(instance_cache: Path, path_params: dict[str, Any]) -> Path:
-    payload = json.dumps(normalize_path_params(path_params), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def strategy_cache_path(instance_cache: Path, path_params: dict[str, Any], force_path_map: dict[str, str]) -> Path:
+    payload = json.dumps(
+        {
+            "path_params": normalize_path_params(path_params),
+            "force_path_map": dict(sorted(force_path_map.items())),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     digest = hashlib.md5(payload.encode("utf-8")).hexdigest()[:10]
     return instance_cache.with_name(f"{instance_cache.stem}_{digest}{instance_cache.suffix}")
 
@@ -277,10 +307,11 @@ def run_one(
     setup_store: SetupRowStore,
     params: dict[str, float | int],
     path_params: dict[str, Any],
+    force_path_map: dict[str, str],
     horizon: int,
     baseline_path_ids: dict[str, str],
 ) -> dict[str, Any]:
-    cache_path = strategy_cache_path(instance_cache, path_params)
+    cache_path = strategy_cache_path(instance_cache, path_params, force_path_map)
     instance = build_instance(
         root,
         input_path,
@@ -290,7 +321,7 @@ def run_one(
         path_batch_weight=float(path_params["path_batch_weight"]),
         path_wait_weight=float(path_params["path_wait_weight"]),
         path_machine_penalties=dict(path_params["path_machine_penalties"]),
-        force_path_map={},
+        force_path_map=force_path_map,
     )
     instance.horizon = int(horizon)
     scheduler = RelaxedRLScheduler(instance, setup_store, **params)
@@ -303,6 +334,7 @@ def run_one(
         "name": name,
         "params": params,
         "path_params": normalize_path_params(path_params),
+        "force_path_map": dict(sorted(force_path_map.items())),
         **summarize_path_changes(extract_path_ids(instance), baseline_path_ids),
         "metrics": metrics,
         "validation": validation,
@@ -342,6 +374,7 @@ def main() -> int:
     if args.anchor_file is not None:
         anchor_file = (root / args.anchor_file).resolve() if not args.anchor_file.is_absolute() else args.anchor_file
     output_dir.mkdir(parents=True, exist_ok=True)
+    force_path_map = parse_force_path(args.force_path)
 
     instance = build_instance(root, input_path, instance_cache, force=False)
     if args.horizon_override is not None:
@@ -367,6 +400,7 @@ def main() -> int:
                 setup_store,
                 dict(BASE_PARAMS),
                 dict(BASE_PATH_PARAMS),
+                force_path_map,
                 instance.horizon,
                 baseline_path_ids,
             )
@@ -388,6 +422,7 @@ def main() -> int:
                 setup_store,
                 params,
                 path_params,
+                force_path_map,
                 instance.horizon,
                 baseline_path_ids,
             )
@@ -417,6 +452,7 @@ def main() -> int:
             "trials": args.trials,
             "explore_scale": args.explore_scale,
             "anchor_file": str(anchor_file) if anchor_file is not None else None,
+            "force_path_map": dict(sorted(force_path_map.items())),
             "frontier_size": len(frontier),
             "frontier": [
                 {
@@ -426,6 +462,7 @@ def main() -> int:
                     "validation": item["validation"],
                     "params": item["params"],
                     "path_params": item["path_params"],
+                    "force_path_map": item["force_path_map"],
                     "path_change_count": item["path_change_count"],
                     "path_change_sample": item["path_change_sample"],
                 }
