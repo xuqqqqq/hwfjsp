@@ -23,6 +23,7 @@ Frontier solutions:
 | 731 | 18644.03 | [pareto_18644_731.json](F:/huawei_fjsp_llm/huawei_fjsp_llm/outputs/pareto_24480/pareto_18644_731.json:1) |
 | 743 | 18648.39 | [pareto_18648_743.json](F:/huawei_fjsp_llm/huawei_fjsp_llm/outputs/pareto_24480/pareto_18648_743.json:1) |
 | 746 | 18658.47 | [pareto_18658_746.json](F:/huawei_fjsp_llm/huawei_fjsp_llm/outputs/pareto_24480/pareto_18658_746.json:1) |
+| 788 | 18685.36 | [pareto_18685_788.json](F:/huawei_fjsp_llm/huawei_fjsp_llm/outputs/pareto_24480/pareto_18685_788.json:1) |
 | 806 | 18723.73 | [pareto_18724_806.json](F:/huawei_fjsp_llm/huawei_fjsp_llm/outputs/pareto_24480/pareto_18724_806.json:1) |
 | 818 | 18875.15 | [pareto_18875_818.json](F:/huawei_fjsp_llm/huawei_fjsp_llm/outputs/pareto_24480/pareto_18875_818.json:1) |
 
@@ -30,3 +31,4 @@ Notes:
 
 - This is the current non-dominated set found from the accumulated local search runs so far. It is a searched Pareto frontier, not a proof of the global frontier.
 - High-setup experimental runs above `1000` setups were also tested, but in the current search they were dominated and did not enter the frontier.
+- The `788 / 18685.36` point comes from the path-aware search after fixing a repair-stage setup-consistency bug in the solver.
