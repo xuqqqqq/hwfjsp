@@ -17,6 +17,7 @@
   - 支持子算例采样、候选特征构造、启发式基线动作
 - `scripts/rl_train_ppo.py`
   - PPO 训练入口
+  - 支持先做 heuristic behavior cloning warm start，再做 PPO 微调
   - 支持 smoke 模式、小规模子集训练、checkpoint 落盘
 
 ## 依赖
@@ -39,6 +40,15 @@ python scripts/rl_train_ppo.py `
   --task-sampling mixed `
   --decision-budget 512 `
   --steps-per-update 1024 `
+  --updates 10
+```
+
+如果想显式控制 warm start：
+
+```powershell
+python scripts/rl_train_ppo.py `
+  --bc-steps 1024 `
+  --bc-epochs 3 `
   --updates 10
 ```
 

@@ -29,6 +29,14 @@ class PPOBatch:
     advantages: torch.Tensor
 
 
+@dataclass
+class ImitationBatch:
+    global_features: torch.Tensor
+    candidate_features: torch.Tensor
+    action_mask: torch.Tensor
+    actions: torch.Tensor
+
+
 class CandidatePolicyValueNet(nn.Module):
     def __init__(self, global_dim: int, candidate_dim: int, hidden_dim: int = 128) -> None:
         super().__init__()
@@ -86,6 +94,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps-per-update", type=int, default=1024)
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--mini-batch-size", type=int, default=128)
+    parser.add_argument("--bc-steps", type=int, default=512)
+    parser.add_argument("--bc-epochs", type=int, default=3)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--clip-ratio", type=float, default=0.2)
@@ -270,6 +280,74 @@ def ppo_update(
     return {key: round(value / denom, 6) for key, value in metrics.items()}
 
 
+def collect_imitation_batch(
+    env: DispatchPPOEnv,
+    target_steps: int,
+    device: torch.device,
+) -> ImitationBatch:
+    observations_g: list[np.ndarray] = []
+    observations_c: list[np.ndarray] = []
+    observations_m: list[np.ndarray] = []
+    actions: list[int] = []
+
+    obs = env.reset()
+    while len(actions) < target_steps:
+        action = env.heuristic_action(obs)
+        next_obs, _reward, done, _info = env.step(action)
+        observations_g.append(obs.global_features.copy())
+        observations_c.append(obs.candidate_features.copy())
+        observations_m.append(obs.action_mask.copy())
+        actions.append(action)
+        obs = env.reset() if done else next_obs
+
+    return ImitationBatch(
+        global_features=torch.as_tensor(np.asarray(observations_g), dtype=torch.float32, device=device),
+        candidate_features=torch.as_tensor(np.asarray(observations_c), dtype=torch.float32, device=device),
+        action_mask=torch.as_tensor(np.asarray(observations_m), dtype=torch.float32, device=device),
+        actions=torch.as_tensor(actions, dtype=torch.long, device=device),
+    )
+
+
+def behavior_clone_pretrain(
+    model: CandidatePolicyValueNet,
+    optimizer: torch.optim.Optimizer,
+    batch: ImitationBatch,
+    epochs: int,
+    mini_batch_size: int,
+) -> dict[str, float]:
+    total_steps = batch.actions.size(0)
+    indices = np.arange(total_steps)
+    total_loss = 0.0
+    total_acc = 0.0
+    denom = 0
+
+    for _ in range(epochs):
+        np.random.shuffle(indices)
+        for start in range(0, total_steps, mini_batch_size):
+            batch_idx = indices[start : start + mini_batch_size]
+            logits, _ = model(
+                batch.global_features[batch_idx],
+                batch.candidate_features[batch_idx],
+                batch.action_mask[batch_idx],
+            )
+            loss = torch.nn.functional.cross_entropy(logits, batch.actions[batch_idx])
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            preds = torch.argmax(logits, dim=-1)
+            acc = (preds == batch.actions[batch_idx]).float().mean()
+            total_loss += float(loss.item())
+            total_acc += float(acc.item())
+            denom += 1
+
+    return {
+        "bc_loss": round(total_loss / max(denom, 1), 6),
+        "bc_acc": round(total_acc / max(denom, 1), 6),
+    }
+
+
 def evaluate_policy(
     env: DispatchPPOEnv,
     model: CandidatePolicyValueNet,
@@ -321,6 +399,8 @@ def main() -> int:
         args.updates = min(args.updates, 1)
         args.steps_per_update = min(args.steps_per_update, 64)
         args.ppo_epochs = min(args.ppo_epochs, 2)
+        args.bc_steps = min(args.bc_steps, 64)
+        args.bc_epochs = min(args.bc_epochs, 1)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -361,6 +441,18 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     heuristic_metrics = heuristic_rollout(env, episodes=2 if args.smoke else 3)
     print(json.dumps({"baseline": heuristic_metrics}, ensure_ascii=False, indent=2), flush=True)
+
+    if args.bc_steps > 0 and args.bc_epochs > 0:
+        imitation_batch = collect_imitation_batch(env, args.bc_steps, device)
+        bc_metrics = behavior_clone_pretrain(
+            model,
+            optimizer,
+            imitation_batch,
+            epochs=args.bc_epochs,
+            mini_batch_size=args.mini_batch_size,
+        )
+        bc_eval_metrics = evaluate_policy(env, model, device, episodes=2 if args.smoke else 3)
+        print(json.dumps({"behavior_clone": {**bc_metrics, **bc_eval_metrics}}, ensure_ascii=False, indent=2), flush=True)
 
     history: list[dict[str, float]] = []
     try:
