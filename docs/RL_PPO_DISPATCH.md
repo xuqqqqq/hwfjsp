@@ -90,6 +90,16 @@ python scripts/rl_train_ppo.py `
   --teacher-mix 0.3
 ```
 
+如果想把小子集上学到的 best checkpoint 迁移到更大子集继续训练：
+
+```powershell
+python scripts/rl_train_ppo.py `
+  --task-limit 512 `
+  --curriculum-task-limits 256,512 `
+  --init-checkpoint outputs/rl_runs/seed7_subset256_conservative_t2/ppo_phase1_best.pt `
+  --updates 6
+```
+
 ## 这版的边界
 
 - 还没有把 phase-2 补全也纳入 RL。

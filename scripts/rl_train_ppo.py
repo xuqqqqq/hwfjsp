@@ -125,6 +125,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=["cpu"], default="cpu")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/rl_runs"))
     parser.add_argument("--checkpoint-name", type=str, default="ppo_phase1_latest.pt")
+    parser.add_argument("--init-checkpoint", type=Path, default=None)
     parser.add_argument("--smoke", action="store_true", help="Run a tiny train loop for validation")
     return parser.parse_args()
 
@@ -531,6 +532,9 @@ def main() -> int:
     setup_db = (root / args.setup_db).resolve() if not args.setup_db.is_absolute() else args.setup_db
     output_dir = (root / args.output_dir).resolve() if not args.output_dir.is_absolute() else args.output_dir
     checkpoint_path = output_dir / args.checkpoint_name
+    init_checkpoint = None
+    if args.init_checkpoint is not None:
+        init_checkpoint = (root / args.init_checkpoint).resolve() if not args.init_checkpoint.is_absolute() else args.init_checkpoint
 
     instance = build_instance(root, input_path, instance_cache, force=False)
     if args.horizon_override is not None:
@@ -561,6 +565,9 @@ def main() -> int:
     global_dim = int(obs.global_features.shape[0])
     candidate_dim = int(obs.candidate_features.shape[1])
     model = CandidatePolicyValueNet(global_dim, candidate_dim, hidden_dim=args.hidden_dim).to(device)
+    if init_checkpoint is not None:
+        checkpoint_obj = torch.load(init_checkpoint, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint_obj["model_state"])
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     output_dir.mkdir(parents=True, exist_ok=True)
