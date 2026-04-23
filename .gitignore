@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 .idea/
 outputs/*.json
+outputs/rl_runs/
+outputs/*.pt
+outputs/*.pth
 !outputs/rl_relaxed_full_solution.json
 !outputs/rl_relaxed_full_solution_18524_767.json
 !outputs/rl_relaxed_candidate_18547_784.json

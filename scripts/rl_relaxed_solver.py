@@ -143,6 +143,24 @@ class InstanceData:
     tasks: dict[str, TaskSpec]
 
 
+def register_pickle_compat_aliases() -> None:
+    main_mod = sys.modules.get("__main__")
+    if main_mod is None:
+        return
+    for symbol in (
+        CandidateSpec,
+        QTimeSpec,
+        ProcessSpec,
+        TaskSpec,
+        MachineSpec,
+        ScheduledOp,
+        CandidateEval,
+        InstanceData,
+    ):
+        if not hasattr(main_mod, symbol.__name__):
+            setattr(main_mod, symbol.__name__, symbol)
+
+
 class SetupRowStore:
     def __init__(self, db_path: Path, row_cache_size: int = 256) -> None:
         self.db_path = db_path
@@ -393,6 +411,7 @@ def build_task_spec(task_id: str, task_payload: dict[str, Any]) -> TaskSpec:
 def build_instance(root: Path, input_path: Path, cache_path: Path, force: bool = False) -> InstanceData:
     if cache_path.exists() and not force and cache_path.stat().st_mtime >= input_path.stat().st_mtime:
         try:
+            register_pickle_compat_aliases()
             with cache_path.open("rb") as fh:
                 cached = pickle.load(fh)
             cached_path = getattr(cached, "source_input", None)
