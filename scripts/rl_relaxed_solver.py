@@ -176,6 +176,24 @@ def parse_named_str_map(raw: str) -> dict[str, str]:
     return result
 
 
+def infer_force_path_map_from_solution(output_path: Path) -> dict[str, str]:
+    if not output_path.exists():
+        return {}
+    with output_path.open("r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    result: dict[str, str] = {}
+    for task_id, task_payload in payload.get("task", {}).items():
+        path_ids = {
+            str(row["path_id"])
+            for row in task_payload.get("process_path", {}).values()
+            if "path_id" in row
+        }
+        if len(path_ids) == 1:
+            result[str(task_id)] = next(iter(path_ids))
+    return result
+
+
 def path_strategy_signature(
     path_nonbatch_mult: float,
     path_batch_weight: float,
@@ -1435,8 +1453,17 @@ def main() -> int:
     )
     path_machine_penalties = parse_named_float_map(args.path_machine_penalty)
     force_path_map = parse_named_str_map(args.force_path)
+    inferred_force_paths = False
+    if args.command == "validate" and not force_path_map:
+        force_path_map = infer_force_path_map_from_solution(output_path)
+        inferred_force_paths = bool(force_path_map)
 
     print(f"[main] input: {input_path}", flush=True)
+    if inferred_force_paths:
+        print(
+            f"[main] inferred force paths from output: {len(force_path_map)}",
+            flush=True,
+        )
     if path_machine_penalties or force_path_map or any(
         value != default
         for value, default in (
@@ -1452,7 +1479,7 @@ def main() -> int:
                     "path_batch_weight": args.path_batch_weight,
                     "path_wait_weight": args.path_wait_weight,
                     "path_machine_penalty": path_machine_penalties,
-                    "force_path": force_path_map,
+                    "force_path": "<inferred from output>" if inferred_force_paths else force_path_map,
                 },
                 ensure_ascii=False,
             ),

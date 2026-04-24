@@ -15,6 +15,8 @@ New legal high-output point:
 | Solution | Weight | Setup | Key parameters |
 | --- | ---: | ---: | --- |
 | `pareto_18899_837.json` | 18898.85 | 837 | `start_guard=325`, `lookahead=70`, baseline scoring weights |
+| `pareto_18932_825.json` | 18931.91 | 825 | `start_guard=325`, force `KB0040/KB0041/KB0044/KB0045/KB0046` to path `1` |
+| `pareto_18932_827.json` | 18932.41 | 827 | `start_guard=325`, force `KB0032/KB0037/KB0038/KB0039/KB0043` to path `1` |
 
 Observed local search behavior:
 
@@ -24,6 +26,7 @@ Observed local search behavior:
 | Wider lookahead near `sg330` | Below best | `lookahead=75..90` reduced output, despite sometimes lowering setup. |
 | Higher weight / lower setup penalty | Below best | Relaxing setup or increasing weight disrupted the tail task packing. |
 | Started bonus micro-search | Below best | Moving `score_started` away from `140` reduced output. |
+| KB force-path sacrifice bundles | `18932.41 / 827` | Sacrificing selected low-yield late KB tasks onto path `1` frees enough bottleneck capacity to pull higher-value tasks inside the horizon. |
 
 Net gain versus `pareto_18875_818.json`:
 
@@ -41,3 +44,7 @@ Task-set difference:
 | No longer completed versus `pareto_18875_818.json` | 6 | 52.10 |
 
 The gain mainly comes from pulling late `YT0295..YT0298` and `YT0399..YT0400` tasks inside the horizon.
+
+Validator note:
+
+`validate` now infers task path choices from the output file when `--force-path` is not provided, so force-path Pareto files can be checked directly with the normal validate command.
