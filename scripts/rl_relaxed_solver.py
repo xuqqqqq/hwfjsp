@@ -641,6 +641,8 @@ class RelaxedRLScheduler:
         score_zero_setup: float = 380.0,
         score_setup_fixed: float = 430.0,
         score_setup_per: float = 4.4,
+        score_est_final_per: float = 0.01,
+        task_bonus_map: Optional[dict[str, float]] = None,
         phase2_started: float = 2200.0,
         phase2_density: float = 6800.0,
         phase2_family: float = 500.0,
@@ -648,6 +650,7 @@ class RelaxedRLScheduler:
         phase2_zero_setup: float = 900.0,
         phase2_setup_fixed: float = 540.0,
         phase2_setup_per: float = 4.4,
+        phase2_finish_per: float = 0.01,
     ) -> None:
         self.instance = instance
         self.setup_store = setup_store
@@ -661,6 +664,8 @@ class RelaxedRLScheduler:
         self.score_zero_setup = score_zero_setup
         self.score_setup_fixed = score_setup_fixed
         self.score_setup_per = score_setup_per
+        self.score_est_final_per = score_est_final_per
+        self.task_bonus_map = task_bonus_map or {}
         self.phase2_started = phase2_started
         self.phase2_density = phase2_density
         self.phase2_family = phase2_family
@@ -668,6 +673,7 @@ class RelaxedRLScheduler:
         self.phase2_zero_setup = phase2_zero_setup
         self.phase2_setup_fixed = phase2_setup_fixed
         self.phase2_setup_per = phase2_setup_per
+        self.phase2_finish_per = phase2_finish_per
 
         self.machine_free = {machine_id: instance.current_time for machine_id in instance.machines}
         self.machine_last_proc = {machine_id: None for machine_id in instance.machines}
@@ -853,6 +859,7 @@ class RelaxedRLScheduler:
         score = 0.0
         score += task.weight * self.score_weight
         score += density * self.score_density
+        score += self.task_bonus_map.get(eval_item.task_id, 0.0)
         score += self.score_started if eval_item.started else 0.0
         score += self.score_family if eval_item.same_family else 0.0
         score += progress * self.score_progress
@@ -862,7 +869,7 @@ class RelaxedRLScheduler:
         score -= eval_item.setup_time * self.score_setup_per
         score -= (eval_item.start - min_start) * 0.05
         score -= eval_item.option_priority * 8.0
-        score -= (eval_item.est_final - self.instance.current_time) * 0.01
+        score -= (eval_item.est_final - self.instance.current_time) * self.score_est_final_per
         return (score, -eval_item.start, -eval_item.finish, eval_item.task_id)
 
     def score_candidate_phase2(self, eval_item: CandidateEval, min_start: int) -> tuple[float, int, int, str]:
@@ -881,7 +888,7 @@ class RelaxedRLScheduler:
         score -= self.phase2_setup_fixed if eval_item.setup_time > 0 else 0.0
         score -= eval_item.setup_time * self.phase2_setup_per
         score -= (eval_item.start - min_start) * 0.08
-        score -= (eval_item.finish - self.instance.current_time) * 0.01
+        score -= (eval_item.finish - self.instance.current_time) * self.phase2_finish_per
         score -= eval_item.option_priority * 10.0
         return (score, -eval_item.start, -eval_item.finish, eval_item.task_id)
 
@@ -1426,6 +1433,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score-zero-setup", type=float, default=380.0)
     parser.add_argument("--score-setup-fixed", type=float, default=430.0)
     parser.add_argument("--score-setup-per", type=float, default=4.4)
+    parser.add_argument("--score-est-final-per", type=float, default=0.01)
+    parser.add_argument(
+        "--task-bonus",
+        type=str,
+        default="",
+        help="Comma-separated task_id=score bonuses added to phase1 candidate scores",
+    )
     parser.add_argument("--phase2-started", type=float, default=2200.0)
     parser.add_argument("--phase2-density", type=float, default=6800.0)
     parser.add_argument("--phase2-family", type=float, default=500.0)
@@ -1433,6 +1447,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--phase2-zero-setup", type=float, default=900.0)
     parser.add_argument("--phase2-setup-fixed", type=float, default=540.0)
     parser.add_argument("--phase2-setup-per", type=float, default=4.4)
+    parser.add_argument("--phase2-finish-per", type=float, default=0.01)
     parser.add_argument("--rebuild-instance", action="store_true")
     parser.add_argument("--rebuild-setup", action="store_true")
     return parser.parse_args()
@@ -1453,6 +1468,7 @@ def main() -> int:
     )
     path_machine_penalties = parse_named_float_map(args.path_machine_penalty)
     force_path_map = parse_named_str_map(args.force_path)
+    task_bonus_map = parse_named_float_map(args.task_bonus)
     inferred_force_paths = False
     if args.command == "validate" and not force_path_map:
         force_path_map = infer_force_path_map_from_solution(output_path)
@@ -1464,7 +1480,7 @@ def main() -> int:
             f"[main] inferred force paths from output: {len(force_path_map)}",
             flush=True,
         )
-    if path_machine_penalties or force_path_map or any(
+    if path_machine_penalties or force_path_map or task_bonus_map or any(
         value != default
         for value, default in (
             (args.path_nonbatch_mult, 3.0),
@@ -1480,6 +1496,7 @@ def main() -> int:
                     "path_wait_weight": args.path_wait_weight,
                     "path_machine_penalty": path_machine_penalties,
                     "force_path": "<inferred from output>" if inferred_force_paths else force_path_map,
+                    "task_bonus": task_bonus_map,
                 },
                 ensure_ascii=False,
             ),
@@ -1517,6 +1534,8 @@ def main() -> int:
                 score_zero_setup=args.score_zero_setup,
                 score_setup_fixed=args.score_setup_fixed,
                 score_setup_per=args.score_setup_per,
+                score_est_final_per=args.score_est_final_per,
+                task_bonus_map=task_bonus_map,
                 phase2_started=args.phase2_started,
                 phase2_density=args.phase2_density,
                 phase2_family=args.phase2_family,
@@ -1524,6 +1543,7 @@ def main() -> int:
                 phase2_zero_setup=args.phase2_zero_setup,
                 phase2_setup_fixed=args.phase2_setup_fixed,
                 phase2_setup_per=args.phase2_setup_per,
+                phase2_finish_per=args.phase2_finish_per,
             )
             task_records = scheduler.solve()
             dump_solution(instance, task_records, output_path)

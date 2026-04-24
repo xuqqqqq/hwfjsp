@@ -20,7 +20,7 @@ from rl_relaxed_solver import (
 
 BASE_PARAMS: dict[str, float | int] = {
     "lookahead": 70,
-    "start_guard": 360,
+    "start_guard": 330,
     "score_weight": 340.0,
     "score_density": 23500.0,
     "score_started": 140.0,
@@ -29,6 +29,7 @@ BASE_PARAMS: dict[str, float | int] = {
     "score_zero_setup": 0.0,
     "score_setup_fixed": 390.0,
     "score_setup_per": 4.0,
+    "score_est_final_per": 0.01,
     "phase2_started": 2200.0,
     "phase2_density": 6900.0,
     "phase2_family": 560.0,
@@ -36,6 +37,7 @@ BASE_PARAMS: dict[str, float | int] = {
     "phase2_zero_setup": 0.0,
     "phase2_setup_fixed": 500.0,
     "phase2_setup_per": 4.0,
+    "phase2_finish_per": 0.01,
 }
 
 BASE_PATH_PARAMS: dict[str, Any] = {
@@ -104,12 +106,14 @@ def sample_params(
     params["score_zero_setup"] = clamp_float(float(base["score_zero_setup"]) + rng.uniform(-40.0, 200.0) * scale, 0.0, 500.0)
     params["score_setup_fixed"] = clamp_float(float(base["score_setup_fixed"]) + rng.uniform(-80.0, 90.0) * scale, 220.0, 620.0)
     params["score_setup_per"] = clamp_float(float(base["score_setup_per"]) + rng.uniform(-0.8, 0.8) * scale, 2.5, 6.5)
+    params["score_est_final_per"] = clamp_float(float(base["score_est_final_per"]) + rng.uniform(-0.008, 0.012) * scale, 0.0, 0.05)
     params["phase2_started"] = clamp_float(float(base["phase2_started"]) + rng.uniform(-350.0, 350.0) * scale, 1200.0, 3200.0)
     params["phase2_density"] = clamp_float(float(base["phase2_density"]) + rng.uniform(-1000.0, 1000.0) * scale, 4200.0, 8600.0)
     params["phase2_family"] = clamp_float(float(base["phase2_family"]) + rng.uniform(-160.0, 160.0) * scale, 180.0, 900.0)
     params["phase2_zero_setup"] = clamp_float(float(base["phase2_zero_setup"]) + rng.uniform(-80.0, 240.0) * scale, 0.0, 1200.0)
     params["phase2_setup_fixed"] = clamp_float(float(base["phase2_setup_fixed"]) + rng.uniform(-80.0, 80.0) * scale, 260.0, 760.0)
     params["phase2_setup_per"] = clamp_float(float(base["phase2_setup_per"]) + rng.uniform(-0.8, 0.8) * scale, 2.5, 6.5)
+    params["phase2_finish_per"] = clamp_float(float(base["phase2_finish_per"]) + rng.uniform(-0.01, 0.02) * scale, 0.0, 0.06)
     return params
 
 

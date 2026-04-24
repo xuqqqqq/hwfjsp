@@ -48,3 +48,18 @@ The gain mainly comes from pulling late `YT0295..YT0298` and `YT0399..YT0400` ta
 Validator note:
 
 `validate` now infers task path choices from the output file when `--force-path` is not provided, so force-path Pareto files can be checked directly with the normal validate command.
+
+## 2026-04-25 Follow-up Probes
+
+No new Pareto point exceeded `pareto_18932_827.json`.
+
+| Probe | Best observed | Outcome |
+| --- | --- | --- |
+| Estimated-finish penalty grid | `18870.75 / 780` | Lower `score_est_final_per` can reduce setup, but loses too much completed weight. The default `0.01` remains best for high output. |
+| Phase2 finish penalty grid | `18932.41 / 827` | Values from `0` to `0.03` converged to the same incumbent schedule. |
+| Reference-solution path subsets | `18723.65 / 828` | Forcing the reference `YT/TJ/KB/BC` path deltas on top of the incumbent disrupted the current heuristic schedule. |
+| Critical late-task bonus | `18689.16 / 833` | Directly boosting near-horizon late tasks pulled the search away from higher-value incumbent packing. |
+
+Automation note:
+
+`search_relaxed_frontier.py` now anchors at `start_guard=330` and samples the exposed finish-penalty knobs, so future automated searches start from the current high-output basin instead of the older `18875` basin.
