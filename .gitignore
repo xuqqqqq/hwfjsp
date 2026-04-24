@@ -5,6 +5,7 @@ __pycache__/
 .idea/
 outputs/*.json
 outputs/auto_frontier_*/
+outputs/auto_tune_*/
 outputs/parallel_force_path_agent/
 outputs/parallel_bottleneck_agent/
 outputs/rl_runs/
