@@ -176,6 +176,13 @@ def parse_named_str_map(raw: str) -> dict[str, str]:
     return result
 
 
+def parse_name_set(raw: str) -> set[str]:
+    text = raw.strip()
+    if not text:
+        return set()
+    return {item.strip() for item in text.split(",") if item.strip()}
+
+
 def infer_force_path_map_from_solution(output_path: Path) -> dict[str, str]:
     if not output_path.exists():
         return {}
@@ -643,6 +650,7 @@ class RelaxedRLScheduler:
         score_setup_per: float = 4.4,
         score_est_final_per: float = 0.01,
         task_bonus_map: Optional[dict[str, float]] = None,
+        defer_task_ids: Optional[set[str]] = None,
         phase2_started: float = 2200.0,
         phase2_density: float = 6800.0,
         phase2_family: float = 500.0,
@@ -666,6 +674,7 @@ class RelaxedRLScheduler:
         self.score_setup_per = score_setup_per
         self.score_est_final_per = score_est_final_per
         self.task_bonus_map = task_bonus_map or {}
+        self.defer_task_ids = defer_task_ids or set()
         self.phase2_started = phase2_started
         self.phase2_density = phase2_density
         self.phase2_family = phase2_family
@@ -1053,6 +1062,9 @@ class RelaxedRLScheduler:
 
     def solve(self) -> dict[str, list[ScheduledOp]]:
         for task_id in self.instance.tasks:
+            if task_id in self.defer_task_ids:
+                self.task_status[task_id] = "deferred"
+                continue
             self.advance_batch_prefix(task_id, respect_horizon=True)
 
         while True:
@@ -1440,6 +1452,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated task_id=score bonuses added to phase1 candidate scores",
     )
+    parser.add_argument(
+        "--defer-task",
+        type=str,
+        default="",
+        help="Comma-separated task ids forced out of phase1 and completed only in phase2",
+    )
     parser.add_argument("--phase2-started", type=float, default=2200.0)
     parser.add_argument("--phase2-density", type=float, default=6800.0)
     parser.add_argument("--phase2-family", type=float, default=500.0)
@@ -1469,6 +1487,7 @@ def main() -> int:
     path_machine_penalties = parse_named_float_map(args.path_machine_penalty)
     force_path_map = parse_named_str_map(args.force_path)
     task_bonus_map = parse_named_float_map(args.task_bonus)
+    defer_task_ids = parse_name_set(args.defer_task)
     inferred_force_paths = False
     if args.command == "validate" and not force_path_map:
         force_path_map = infer_force_path_map_from_solution(output_path)
@@ -1480,7 +1499,7 @@ def main() -> int:
             f"[main] inferred force paths from output: {len(force_path_map)}",
             flush=True,
         )
-    if path_machine_penalties or force_path_map or task_bonus_map or any(
+    if path_machine_penalties or force_path_map or task_bonus_map or defer_task_ids or any(
         value != default
         for value, default in (
             (args.path_nonbatch_mult, 3.0),
@@ -1497,6 +1516,7 @@ def main() -> int:
                     "path_machine_penalty": path_machine_penalties,
                     "force_path": "<inferred from output>" if inferred_force_paths else force_path_map,
                     "task_bonus": task_bonus_map,
+                    "defer_task": sorted(defer_task_ids),
                 },
                 ensure_ascii=False,
             ),
@@ -1536,6 +1556,7 @@ def main() -> int:
                 score_setup_per=args.score_setup_per,
                 score_est_final_per=args.score_est_final_per,
                 task_bonus_map=task_bonus_map,
+                defer_task_ids=defer_task_ids,
                 phase2_started=args.phase2_started,
                 phase2_density=args.phase2_density,
                 phase2_family=args.phase2_family,

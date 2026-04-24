@@ -15,7 +15,10 @@ New legal high-output point:
 | Solution | Weight | Setup | Key parameters |
 | --- | ---: | ---: | --- |
 | `pareto_18899_837.json` | 18898.85 | 837 | `start_guard=325`, `lookahead=70`, baseline scoring weights |
+| `pareto_18896_815.json` | 18896.39 | 815 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043/KB0040/KB0041/KB0044/KB0045/KB0046` to phase2 |
+| `pareto_18907_823.json` | 18906.89 | 823 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043/KB0040/KB0041/KB0044/KB0045` to phase2 |
 | `pareto_18932_825.json` | 18931.91 | 825 | `start_guard=325`, force `KB0040/KB0041/KB0044/KB0045/KB0046` to path `1` |
+| `pareto_18932_826.json` | 18932.41 | 826 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043` to phase2, default paths |
 | `pareto_18932_827.json` | 18932.41 | 827 | `start_guard=325`, force `KB0032/KB0037/KB0038/KB0039/KB0043` to path `1` |
 
 Observed local search behavior:
@@ -59,7 +62,8 @@ No new Pareto point exceeded `pareto_18932_827.json`.
 | Phase2 finish penalty grid | `18932.41 / 827` | Values from `0` to `0.03` converged to the same incumbent schedule. |
 | Reference-solution path subsets | `18723.65 / 828` | Forcing the reference `YT/TJ/KB/BC` path deltas on top of the incumbent disrupted the current heuristic schedule. |
 | Critical late-task bonus | `18689.16 / 833` | Directly boosting near-horizon late tasks pulled the search away from higher-value incumbent packing. |
+| Defer-task sacrifice | `18932.41 / 826` | Deferring the same five KB tasks that previously needed force-path sacrifices preserved output and removed one positive setup. Wider KB defer sets produced lower-setup Pareto points at `18906.89 / 823` and `18896.39 / 815`. |
 
 Automation note:
 
-`search_relaxed_frontier.py` now anchors at `start_guard=330` and samples the exposed finish-penalty knobs, so future automated searches start from the current high-output basin instead of the older `18875` basin.
+`search_relaxed_frontier.py` now anchors at `start_guard=330`, samples the exposed finish-penalty knobs, and accepts `--defer-task`, so future automated searches start from the current high-output basin instead of the older `18875` basin.

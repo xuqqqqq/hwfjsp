@@ -4,6 +4,33 @@
     "force_path": {}
   },
   {
+    "name": "defer_best_kb_0032_0037_0038_0039_0043",
+    "force_path": {},
+    "defer_task": [
+      "KB0032",
+      "KB0037",
+      "KB0038",
+      "KB0039",
+      "KB0043"
+    ]
+  },
+  {
+    "name": "defer_best_and_late_kb10",
+    "force_path": {},
+    "defer_task": [
+      "KB0032",
+      "KB0037",
+      "KB0038",
+      "KB0039",
+      "KB0043",
+      "KB0040",
+      "KB0041",
+      "KB0044",
+      "KB0045",
+      "KB0046"
+    ]
+  },
+  {
     "name": "kb0039_kb0043",
     "force_path": {
       "KB0039": "1",

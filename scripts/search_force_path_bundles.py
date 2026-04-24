@@ -7,7 +7,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from rl_relaxed_solver import SetupRowStore, build_instance, detect_input_json
+from rl_relaxed_solver import SetupRowStore, build_instance, detect_input_json, parse_name_set
 from search_relaxed_frontier import (
     BASE_PARAMS,
     BASE_PATH_PARAMS,
@@ -50,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--explore-scale", type=float, default=0.2)
     parser.add_argument("--skip-baseline", action="store_true")
     parser.add_argument("--bundles-file", type=Path, default=None, help="JSON file with [{'name':..., 'force_path': {...}}]")
+    parser.add_argument(
+        "--defer-task",
+        type=str,
+        default="",
+        help="Comma-separated task ids forced into phase2 for every bundle",
+    )
     return parser.parse_args()
 
 
@@ -62,7 +68,8 @@ def load_bundles(bundles_file: Path | None) -> list[dict[str, Any]]:
     for item in payload:
         name = str(item["name"])
         force_path = {str(task_id): str(path_id) for task_id, path_id in item.get("force_path", {}).items()}
-        bundles.append({"name": name, "force_path": force_path})
+        defer_task = [str(task_id) for task_id in item.get("defer_task", [])]
+        bundles.append({"name": name, "force_path": force_path, "defer_task": defer_task})
     return bundles
 
 
@@ -98,6 +105,7 @@ def main() -> int:
     if args.anchor_file is not None:
         anchor_file = (root / args.anchor_file).resolve() if not args.anchor_file.is_absolute() else args.anchor_file
     output_dir.mkdir(parents=True, exist_ok=True)
+    global_defer_task_ids = parse_name_set(args.defer_task)
 
     instance = build_instance(root, input_path, instance_cache, force=False)
     if args.horizon_override is not None:
@@ -116,6 +124,7 @@ def main() -> int:
         for bundle_idx, bundle in enumerate(bundles):
             bundle_name = bundle["name"]
             force_path = bundle["force_path"]
+            defer_task_ids = global_defer_task_ids | set(bundle.get("defer_task", []))
             bundle_dir = output_dir / bundle_name
             bundle_dir.mkdir(parents=True, exist_ok=True)
 
@@ -130,6 +139,7 @@ def main() -> int:
                     dict(BASE_PARAMS),
                     dict(BASE_PATH_PARAMS),
                     force_path,
+                    defer_task_ids,
                     instance.horizon,
                     baseline_path_ids,
                 )
@@ -158,6 +168,7 @@ def main() -> int:
                     params,
                     normalize_path_params(BASE_PATH_PARAMS),
                     force_path,
+                    defer_task_ids,
                     instance.horizon,
                     baseline_path_ids,
                 )
@@ -169,6 +180,7 @@ def main() -> int:
                             "bundle": bundle_name,
                             "run": result["name"],
                             "force_path_count": len(force_path),
+                            "defer_task_count": len(defer_task_ids),
                             "metrics": result["metrics"],
                             "validation": result["validation"],
                         },
@@ -198,6 +210,7 @@ def main() -> int:
                     "params": item["params"],
                     "path_params": item["path_params"],
                     "force_path_map": item["force_path_map"],
+                    "defer_task_ids": item["defer_task_ids"],
                 }
                 for item in frontier
             ],

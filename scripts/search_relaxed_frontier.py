@@ -14,6 +14,7 @@ from rl_relaxed_solver import (
     build_instance,
     detect_input_json,
     dump_solution,
+    parse_name_set,
     validate_solution,
 )
 
@@ -70,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Comma-separated task_id=path_id overrides applied to every search run",
+    )
+    parser.add_argument(
+        "--defer-task",
+        type=str,
+        default="",
+        help="Comma-separated task ids forced into phase2 for every search run",
     )
     return parser.parse_args()
 
@@ -312,6 +319,7 @@ def run_one(
     params: dict[str, float | int],
     path_params: dict[str, Any],
     force_path_map: dict[str, str],
+    defer_task_ids: set[str],
     horizon: int,
     baseline_path_ids: dict[str, str],
 ) -> dict[str, Any]:
@@ -328,7 +336,7 @@ def run_one(
         force_path_map=force_path_map,
     )
     instance.horizon = int(horizon)
-    scheduler = RelaxedRLScheduler(instance, setup_store, **params)
+    scheduler = RelaxedRLScheduler(instance, setup_store, defer_task_ids=defer_task_ids, **params)
     task_records = scheduler.solve()
     metrics = scheduler.metrics()
     solution_path = output_dir / format_solution_name({"name": name, "metrics": metrics})
@@ -339,6 +347,7 @@ def run_one(
         "params": params,
         "path_params": normalize_path_params(path_params),
         "force_path_map": dict(sorted(force_path_map.items())),
+        "defer_task_ids": sorted(defer_task_ids),
         **summarize_path_changes(extract_path_ids(instance), baseline_path_ids),
         "metrics": metrics,
         "validation": validation,
@@ -379,6 +388,7 @@ def main() -> int:
         anchor_file = (root / args.anchor_file).resolve() if not args.anchor_file.is_absolute() else args.anchor_file
     output_dir.mkdir(parents=True, exist_ok=True)
     force_path_map = parse_force_path(args.force_path)
+    defer_task_ids = parse_name_set(args.defer_task)
 
     instance = build_instance(root, input_path, instance_cache, force=False)
     if args.horizon_override is not None:
@@ -405,6 +415,7 @@ def main() -> int:
                 dict(BASE_PARAMS),
                 dict(BASE_PATH_PARAMS),
                 force_path_map,
+                defer_task_ids,
                 instance.horizon,
                 baseline_path_ids,
             )
@@ -427,6 +438,7 @@ def main() -> int:
                 params,
                 path_params,
                 force_path_map,
+                defer_task_ids,
                 instance.horizon,
                 baseline_path_ids,
             )
@@ -457,6 +469,7 @@ def main() -> int:
             "explore_scale": args.explore_scale,
             "anchor_file": str(anchor_file) if anchor_file is not None else None,
             "force_path_map": dict(sorted(force_path_map.items())),
+            "defer_task_ids": sorted(defer_task_ids),
             "frontier_size": len(frontier),
             "frontier": [
                 {
@@ -467,6 +480,7 @@ def main() -> int:
                     "params": item["params"],
                     "path_params": item["path_params"],
                     "force_path_map": item["force_path_map"],
+                    "defer_task_ids": item["defer_task_ids"],
                     "path_change_count": item["path_change_count"],
                     "path_change_sample": item["path_change_sample"],
                 }
