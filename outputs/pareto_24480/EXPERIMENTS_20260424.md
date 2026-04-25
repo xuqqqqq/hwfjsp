@@ -24,6 +24,7 @@ New legal high-output point:
 | `pareto_18932_825.json` | 18931.91 | 825 | `start_guard=325`, force `KB0040/KB0041/KB0044/KB0045/KB0046` to path `1` |
 | `pareto_18932_826.json` | 18932.41 | 826 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043` to phase2, default paths |
 | `pareto_18932_827.json` | 18932.41 | 827 | `start_guard=325`, force `KB0032/KB0037/KB0038/KB0039/KB0043` to path `1` |
+| `pareto_18946_839.json` | 18945.59 | 839 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043/NP99641`; trades a low-weight surface-treatment tail task for higher-value near-horizon NQ/YT completions |
 
 Observed local search behavior:
 
@@ -58,7 +59,7 @@ Validator note:
 
 ## 2026-04-25 Follow-up Probes
 
-No new Pareto point exceeded the current high-output best `pareto_18932_826.json`, but tail-sacrifice probes improved the low-setup region to `18766.98 / 768` and added an adjacent `18771.72 / 802` tradeoff.
+Tail-sacrifice probes improved the low-setup region to `18766.98 / 768` and added an adjacent `18771.72 / 802` tradeoff. A later surface-treatment tail probe also raised the high-output best to `18945.59 / 839`.
 
 | Probe | Best observed | Outcome |
 | --- | --- | --- |
@@ -70,6 +71,7 @@ No new Pareto point exceeded the current high-output best `pareto_18932_826.json
 | Defer plus near-horizon bonus | `18742.42 / 798` | A bonus of `140..155` for `NQ08692/YT0294/NQ10422/NQ10421` consistently crossed below 800 setup, improving the previous 800-ish frontier even though it sacrifices high-output packing. |
 | Defer low-yield tail bundle | `18763.98 / 775` | Deferring low-weight tasks finishing near the horizon produced a cleaner low-setup tradeoff and dominates the `18742.42 / 798` intermediate point. |
 | Low-tail bundle ablation | `18766.98 / 768`; `18771.72 / 802` | Keeping `NP71371` improves both weight and setup. Keeping both `NP71371` and `NP99641` buys a little more weight at setup `802`. |
+| Surface-treatment tail sacrifice | `18945.59 / 839` | Deferring `NP99641` on top of the five-KB defer set pulls `NQ08711/YT0627/NQ08691/NQ08692` inside the horizon while losing `YT0736/ED5683/NP99641`, netting `+13.18` completed weight. |
 
 Automation note:
 
