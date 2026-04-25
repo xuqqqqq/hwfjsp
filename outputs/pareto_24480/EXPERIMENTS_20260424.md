@@ -29,6 +29,7 @@ New legal high-output point:
 | `pareto_18767_677.json` | 18766.98 | 677 | Add `--phase2-allow-unstarted` to the low-tail defer bundle; preserves the prior low-tail weight while removing 91 positive setups |
 | `pareto_18784_691.json` | 18783.62 | 691 | Keep both `NP71371` and `NP99641` out of the low-tail defer bundle under the relaxed phase2 gate |
 | `pareto_18943_733.json` | 18942.79 | 733 | Add `--phase2-allow-unstarted` to the surface setup bridge; same completed weight as `18943 / 835` with 102 fewer positive setups |
+| `pareto_18946_729.json` | 18945.59 | 729 | Add `--force-machine YT0294:8=4#拉弯矫` on top of the high-output phase2-gate point; same completed weight as `18946 / 737` with 8 fewer positive setups |
 | `pareto_18946_737.json` | 18945.59 | 737 | Add `--phase2-allow-unstarted` to the high-output `NP99641` surface-tail sacrifice; same completed weight as `18946 / 839` with 102 fewer positive setups |
 
 Observed local search behavior:
@@ -79,9 +80,10 @@ Tail-sacrifice probes improved the low-setup region to `18766.98 / 768` and adde
 | Surface-treatment tail sacrifice | `18945.59 / 839` | Deferring `NP99641` on top of the five-KB defer set pulls `NQ08711/YT0627/NQ08691/NQ08692` inside the horizon while losing `YT0736/ED5683/NP99641`, netting `+13.18` completed weight. |
 | Surface setup bridge | `18942.79 / 835` | Adding `NQ02772` to the `NP99641` defer set swaps in `NQ0507` and removes four positive setup transitions at a small `-2.80` weight cost. |
 | Phase2 unstarted candidate gate | `18945.59 / 737`; `18942.79 / 733`; `18783.62 / 691`; `18766.98 / 677` | Allowing phase2 to score unstarted tasks even when started candidates exist preserves the within-horizon task set for the high-output schedules but repacks the after-horizon completion tail with far fewer setup transitions. Zero-setup bonus variants under this mode produced incomplete solutions and were rejected. |
+| Machine-level tail repack | `18945.59 / 729` | Forcing late `YT0294` final operation to `4#拉弯矫` leaves the completed-within-horizon task set unchanged while lowering positive setups. Forcing `YT0294` to `4#纵剪` or moving its previous operation to `5#拉弯矫` caused an incomplete task; extending the same final-machine rule to `YT0295` reduced weight or became invalid. |
 
 Automation note:
 
 `search_relaxed_frontier.py` now anchors at `start_guard=330`, samples the exposed finish-penalty knobs, and accepts `--defer-task`, so future automated searches start from the current high-output basin instead of the older `18875` basin.
 
-The search script also accepts `--phase2-allow-unstarted`; this should be enabled for current frontier searches because it preserves high-output completions while substantially lowering total positive setup count.
+The search script also accepts `--phase2-allow-unstarted` and `--force-machine`; both should be available for current frontier searches because phase2 repacking and targeted machine-level tail moves are now the strongest setup reducers at fixed high output.

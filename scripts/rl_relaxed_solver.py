@@ -176,6 +176,28 @@ def parse_named_str_map(raw: str) -> dict[str, str]:
     return result
 
 
+def parse_force_machine_map(raw: str) -> dict[tuple[str, str], str]:
+    result: dict[tuple[str, str], str] = {}
+    text = raw.strip()
+    if not text:
+        return result
+    for item in text.split(","):
+        chunk = item.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk or ":" not in chunk.split("=", 1)[0]:
+            raise ValueError(f"Expected task_id:seq=machine_id pair, got: {chunk}")
+        lhs, machine_id = chunk.split("=", 1)
+        task_id, seq = lhs.split(":", 1)
+        task_id = task_id.strip()
+        seq = seq.strip()
+        machine_id = machine_id.strip()
+        if not task_id or not seq or not machine_id:
+            raise ValueError(f"Expected task_id:seq=machine_id pair, got: {chunk}")
+        result[(task_id, seq)] = machine_id
+    return result
+
+
 def parse_name_set(raw: str) -> set[str]:
     text = raw.strip()
     if not text:
@@ -651,6 +673,7 @@ class RelaxedRLScheduler:
         score_est_final_per: float = 0.01,
         task_bonus_map: Optional[dict[str, float]] = None,
         defer_task_ids: Optional[set[str]] = None,
+        force_machine_map: Optional[dict[tuple[str, str], str]] = None,
         phase2_started: float = 2200.0,
         phase2_density: float = 6800.0,
         phase2_family: float = 500.0,
@@ -676,6 +699,7 @@ class RelaxedRLScheduler:
         self.score_est_final_per = score_est_final_per
         self.task_bonus_map = task_bonus_map or {}
         self.defer_task_ids = defer_task_ids or set()
+        self.force_machine_map = force_machine_map or {}
         self.phase2_started = phase2_started
         self.phase2_density = phase2_density
         self.phase2_family = phase2_family
@@ -765,6 +789,9 @@ class RelaxedRLScheduler:
         task = self.instance.tasks[task_id]
         idx = self.next_idx[task_id]
         proc = task.processes[idx]
+        forced_machine = self.force_machine_map.get((task_id, proc.seq))
+        if forced_machine is not None and machine_id != forced_machine:
+            return None
         candidate = next((item for item in proc.candidates if item.machine_id == machine_id), None)
         if candidate is None:
             return None
@@ -1445,6 +1472,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated task_id=path_id overrides for path selection",
     )
+    parser.add_argument(
+        "--force-machine",
+        type=str,
+        default="",
+        help="Comma-separated task_id:seq=machine_id overrides for operation machine selection",
+    )
     parser.add_argument("--lookahead", type=int, default=70, help="Dispatch lookahead window in minutes")
     parser.add_argument("--start-guard", type=int, default=720, help="Defer starting tasks that cannot finish before horizon minus this slack")
     parser.add_argument("--score-weight", type=float, default=335.0)
@@ -1501,6 +1534,7 @@ def main() -> int:
     )
     path_machine_penalties = parse_named_float_map(args.path_machine_penalty)
     force_path_map = parse_named_str_map(args.force_path)
+    force_machine_map = parse_force_machine_map(args.force_machine)
     task_bonus_map = parse_named_float_map(args.task_bonus)
     defer_task_ids = parse_name_set(args.defer_task)
     inferred_force_paths = False
@@ -1514,7 +1548,7 @@ def main() -> int:
             f"[main] inferred force paths from output: {len(force_path_map)}",
             flush=True,
         )
-    if path_machine_penalties or force_path_map or task_bonus_map or defer_task_ids or any(
+    if path_machine_penalties or force_path_map or force_machine_map or task_bonus_map or defer_task_ids or any(
         value != default
         for value, default in (
             (args.path_nonbatch_mult, 3.0),
@@ -1530,6 +1564,10 @@ def main() -> int:
                     "path_wait_weight": args.path_wait_weight,
                     "path_machine_penalty": path_machine_penalties,
                     "force_path": "<inferred from output>" if inferred_force_paths else force_path_map,
+                    "force_machine": {
+                        f"{task_id}:{seq}": machine_id
+                        for (task_id, seq), machine_id in sorted(force_machine_map.items())
+                    },
                     "task_bonus": task_bonus_map,
                     "defer_task": sorted(defer_task_ids),
                 },
@@ -1572,6 +1610,7 @@ def main() -> int:
                 score_est_final_per=args.score_est_final_per,
                 task_bonus_map=task_bonus_map,
                 defer_task_ids=defer_task_ids,
+                force_machine_map=force_machine_map,
                 phase2_started=args.phase2_started,
                 phase2_density=args.phase2_density,
                 phase2_family=args.phase2_family,

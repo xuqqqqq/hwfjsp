@@ -15,6 +15,7 @@ from rl_relaxed_solver import (
     detect_input_json,
     dump_solution,
     parse_name_set,
+    parse_force_machine_map,
     validate_solution,
 )
 
@@ -71,6 +72,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Comma-separated task_id=path_id overrides applied to every search run",
+    )
+    parser.add_argument(
+        "--force-machine",
+        type=str,
+        default="",
+        help="Comma-separated task_id:seq=machine_id overrides applied to every search run",
     )
     parser.add_argument(
         "--defer-task",
@@ -325,6 +332,7 @@ def run_one(
     path_params: dict[str, Any],
     force_path_map: dict[str, str],
     defer_task_ids: set[str],
+    force_machine_map: dict[tuple[str, str], str],
     phase2_allow_unstarted: bool,
     horizon: int,
     baseline_path_ids: dict[str, str],
@@ -343,6 +351,7 @@ def run_one(
     )
     instance.horizon = int(horizon)
     scheduler_params = dict(params)
+    scheduler_params["force_machine_map"] = force_machine_map
     scheduler_params["phase2_started_gate"] = not phase2_allow_unstarted
     scheduler = RelaxedRLScheduler(instance, setup_store, defer_task_ids=defer_task_ids, **scheduler_params)
     task_records = scheduler.solve()
@@ -356,6 +365,10 @@ def run_one(
         "path_params": normalize_path_params(path_params),
         "force_path_map": dict(sorted(force_path_map.items())),
         "defer_task_ids": sorted(defer_task_ids),
+        "force_machine_map": {
+            f"{task_id}:{seq}": machine_id
+            for (task_id, seq), machine_id in sorted(force_machine_map.items())
+        },
         "phase2_allow_unstarted": phase2_allow_unstarted,
         **summarize_path_changes(extract_path_ids(instance), baseline_path_ids),
         "metrics": metrics,
@@ -397,6 +410,7 @@ def main() -> int:
         anchor_file = (root / args.anchor_file).resolve() if not args.anchor_file.is_absolute() else args.anchor_file
     output_dir.mkdir(parents=True, exist_ok=True)
     force_path_map = parse_force_path(args.force_path)
+    force_machine_map = parse_force_machine_map(args.force_machine)
     defer_task_ids = parse_name_set(args.defer_task)
 
     instance = build_instance(root, input_path, instance_cache, force=False)
@@ -425,6 +439,7 @@ def main() -> int:
                 dict(BASE_PATH_PARAMS),
                 force_path_map,
                 defer_task_ids,
+                force_machine_map,
                 args.phase2_allow_unstarted,
                 instance.horizon,
                 baseline_path_ids,
@@ -449,6 +464,7 @@ def main() -> int:
                 path_params,
                 force_path_map,
                 defer_task_ids,
+                force_machine_map,
                 args.phase2_allow_unstarted,
                 instance.horizon,
                 baseline_path_ids,
@@ -480,6 +496,10 @@ def main() -> int:
             "explore_scale": args.explore_scale,
             "anchor_file": str(anchor_file) if anchor_file is not None else None,
             "force_path_map": dict(sorted(force_path_map.items())),
+            "force_machine_map": {
+                f"{task_id}:{seq}": machine_id
+                for (task_id, seq), machine_id in sorted(force_machine_map.items())
+            },
             "defer_task_ids": sorted(defer_task_ids),
             "phase2_allow_unstarted": args.phase2_allow_unstarted,
             "frontier_size": len(frontier),
