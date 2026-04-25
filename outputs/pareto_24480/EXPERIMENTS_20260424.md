@@ -15,6 +15,7 @@ New legal high-output point:
 | Solution | Weight | Setup | Key parameters |
 | --- | ---: | ---: | --- |
 | `pareto_18899_837.json` | 18898.85 | 837 | `start_guard=325`, `lookahead=70`, baseline scoring weights |
+| `pareto_18742_798.json` | 18742.42 | 798 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043` plus `task_bonus=150` for `NQ08692/YT0294/NQ10422/NQ10421` |
 | `pareto_18896_815.json` | 18896.39 | 815 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043/KB0040/KB0041/KB0044/KB0045/KB0046` to phase2 |
 | `pareto_18907_823.json` | 18906.89 | 823 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043/KB0040/KB0041/KB0044/KB0045` to phase2 |
 | `pareto_18932_825.json` | 18931.91 | 825 | `start_guard=325`, force `KB0040/KB0041/KB0044/KB0045/KB0046` to path `1` |
@@ -54,7 +55,7 @@ Validator note:
 
 ## 2026-04-25 Follow-up Probes
 
-No new Pareto point exceeded `pareto_18932_827.json`.
+No new Pareto point exceeded the current high-output best `pareto_18932_826.json`, but the near-horizon bonus probe added a useful setup-under-800 point at `18742.42 / 798`.
 
 | Probe | Best observed | Outcome |
 | --- | --- | --- |
@@ -63,6 +64,7 @@ No new Pareto point exceeded `pareto_18932_827.json`.
 | Reference-solution path subsets | `18723.65 / 828` | Forcing the reference `YT/TJ/KB/BC` path deltas on top of the incumbent disrupted the current heuristic schedule. |
 | Critical late-task bonus | `18689.16 / 833` | Directly boosting near-horizon late tasks pulled the search away from higher-value incumbent packing. |
 | Defer-task sacrifice | `18932.41 / 826` | Deferring the same five KB tasks that previously needed force-path sacrifices preserved output and removed one positive setup. Wider KB defer sets produced lower-setup Pareto points at `18906.89 / 823` and `18896.39 / 815`. |
+| Defer plus near-horizon bonus | `18742.42 / 798` | A bonus of `140..155` for `NQ08692/YT0294/NQ10422/NQ10421` consistently crossed below 800 setup, improving the previous 800-ish frontier even though it sacrifices high-output packing. |
 
 Automation note:
 
