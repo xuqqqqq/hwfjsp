@@ -78,6 +78,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated task ids forced into phase2 for every search run",
     )
+    parser.add_argument(
+        "--phase2-allow-unstarted",
+        action="store_true",
+        help="Let phase2 consider unstarted tasks even when started-task candidates exist",
+    )
     return parser.parse_args()
 
 
@@ -320,6 +325,7 @@ def run_one(
     path_params: dict[str, Any],
     force_path_map: dict[str, str],
     defer_task_ids: set[str],
+    phase2_allow_unstarted: bool,
     horizon: int,
     baseline_path_ids: dict[str, str],
 ) -> dict[str, Any]:
@@ -336,7 +342,9 @@ def run_one(
         force_path_map=force_path_map,
     )
     instance.horizon = int(horizon)
-    scheduler = RelaxedRLScheduler(instance, setup_store, defer_task_ids=defer_task_ids, **params)
+    scheduler_params = dict(params)
+    scheduler_params["phase2_started_gate"] = not phase2_allow_unstarted
+    scheduler = RelaxedRLScheduler(instance, setup_store, defer_task_ids=defer_task_ids, **scheduler_params)
     task_records = scheduler.solve()
     metrics = scheduler.metrics()
     solution_path = output_dir / format_solution_name({"name": name, "metrics": metrics})
@@ -348,6 +356,7 @@ def run_one(
         "path_params": normalize_path_params(path_params),
         "force_path_map": dict(sorted(force_path_map.items())),
         "defer_task_ids": sorted(defer_task_ids),
+        "phase2_allow_unstarted": phase2_allow_unstarted,
         **summarize_path_changes(extract_path_ids(instance), baseline_path_ids),
         "metrics": metrics,
         "validation": validation,
@@ -416,6 +425,7 @@ def main() -> int:
                 dict(BASE_PATH_PARAMS),
                 force_path_map,
                 defer_task_ids,
+                args.phase2_allow_unstarted,
                 instance.horizon,
                 baseline_path_ids,
             )
@@ -439,6 +449,7 @@ def main() -> int:
                 path_params,
                 force_path_map,
                 defer_task_ids,
+                args.phase2_allow_unstarted,
                 instance.horizon,
                 baseline_path_ids,
             )
@@ -470,6 +481,7 @@ def main() -> int:
             "anchor_file": str(anchor_file) if anchor_file is not None else None,
             "force_path_map": dict(sorted(force_path_map.items())),
             "defer_task_ids": sorted(defer_task_ids),
+            "phase2_allow_unstarted": args.phase2_allow_unstarted,
             "frontier_size": len(frontier),
             "frontier": [
                 {

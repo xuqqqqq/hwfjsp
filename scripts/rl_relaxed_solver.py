@@ -659,6 +659,7 @@ class RelaxedRLScheduler:
         phase2_setup_fixed: float = 540.0,
         phase2_setup_per: float = 4.4,
         phase2_finish_per: float = 0.01,
+        phase2_started_gate: bool = True,
     ) -> None:
         self.instance = instance
         self.setup_store = setup_store
@@ -683,6 +684,7 @@ class RelaxedRLScheduler:
         self.phase2_setup_fixed = phase2_setup_fixed
         self.phase2_setup_per = phase2_setup_per
         self.phase2_finish_per = phase2_finish_per
+        self.phase2_started_gate = phase2_started_gate
 
         self.machine_free = {machine_id: instance.current_time for machine_id in instance.machines}
         self.machine_last_proc = {machine_id: None for machine_id in instance.machines}
@@ -1003,7 +1005,11 @@ class RelaxedRLScheduler:
                 break
 
             started_candidates = [item for item in feasible_candidates if item.started]
-            candidate_pool = started_candidates if started_candidates else feasible_candidates
+            candidate_pool = (
+                started_candidates
+                if self.phase2_started_gate and started_candidates
+                else feasible_candidates
+            )
             min_start = min(item.start for item in candidate_pool)
             shortlist = [
                 item for item in candidate_pool if item.start <= min_start + max(self.lookahead, 360)
@@ -1151,7 +1157,11 @@ class RelaxedRLScheduler:
 
             min_start = min(item.start for item in feasible_candidates)
             started_candidates = [item for item in feasible_candidates if item.started]
-            candidate_pool = started_candidates if started_candidates else feasible_candidates
+            candidate_pool = (
+                started_candidates
+                if self.phase2_started_gate and started_candidates
+                else feasible_candidates
+            )
             min_start = min(item.start for item in candidate_pool)
             shortlist = [
                 item for item in candidate_pool if item.start <= min_start + max(self.lookahead, 360)
@@ -1466,6 +1476,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--phase2-setup-fixed", type=float, default=540.0)
     parser.add_argument("--phase2-setup-per", type=float, default=4.4)
     parser.add_argument("--phase2-finish-per", type=float, default=0.01)
+    parser.add_argument(
+        "--phase2-allow-unstarted",
+        action="store_true",
+        help="Let phase2 score all feasible tasks even when started-task candidates exist",
+    )
     parser.add_argument("--rebuild-instance", action="store_true")
     parser.add_argument("--rebuild-setup", action="store_true")
     return parser.parse_args()
@@ -1565,6 +1580,7 @@ def main() -> int:
                 phase2_setup_fixed=args.phase2_setup_fixed,
                 phase2_setup_per=args.phase2_setup_per,
                 phase2_finish_per=args.phase2_finish_per,
+                phase2_started_gate=not args.phase2_allow_unstarted,
             )
             task_records = scheduler.solve()
             dump_solution(instance, task_records, output_path)

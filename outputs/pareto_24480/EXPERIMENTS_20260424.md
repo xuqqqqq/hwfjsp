@@ -26,6 +26,10 @@ New legal high-output point:
 | `pareto_18932_827.json` | 18932.41 | 827 | `start_guard=325`, force `KB0032/KB0037/KB0038/KB0039/KB0043` to path `1` |
 | `pareto_18943_835.json` | 18942.79 | 835 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043/NP99641/NQ02772`; trades `NQ02772` for `NQ0507`, lowering setup versus the high-output best |
 | `pareto_18946_839.json` | 18945.59 | 839 | Defer `KB0032/KB0037/KB0038/KB0039/KB0043/NP99641`; trades a low-weight surface-treatment tail task for higher-value near-horizon NQ/YT completions |
+| `pareto_18767_677.json` | 18766.98 | 677 | Add `--phase2-allow-unstarted` to the low-tail defer bundle; preserves the prior low-tail weight while removing 91 positive setups |
+| `pareto_18784_691.json` | 18783.62 | 691 | Keep both `NP71371` and `NP99641` out of the low-tail defer bundle under the relaxed phase2 gate |
+| `pareto_18943_733.json` | 18942.79 | 733 | Add `--phase2-allow-unstarted` to the surface setup bridge; same completed weight as `18943 / 835` with 102 fewer positive setups |
+| `pareto_18946_737.json` | 18945.59 | 737 | Add `--phase2-allow-unstarted` to the high-output `NP99641` surface-tail sacrifice; same completed weight as `18946 / 839` with 102 fewer positive setups |
 
 Observed local search behavior:
 
@@ -74,7 +78,10 @@ Tail-sacrifice probes improved the low-setup region to `18766.98 / 768` and adde
 | Low-tail bundle ablation | `18766.98 / 768`; `18771.72 / 802` | Keeping `NP71371` improves both weight and setup. Keeping both `NP71371` and `NP99641` buys a little more weight at setup `802`. |
 | Surface-treatment tail sacrifice | `18945.59 / 839` | Deferring `NP99641` on top of the five-KB defer set pulls `NQ08711/YT0627/NQ08691/NQ08692` inside the horizon while losing `YT0736/ED5683/NP99641`, netting `+13.18` completed weight. |
 | Surface setup bridge | `18942.79 / 835` | Adding `NQ02772` to the `NP99641` defer set swaps in `NQ0507` and removes four positive setup transitions at a small `-2.80` weight cost. |
+| Phase2 unstarted candidate gate | `18945.59 / 737`; `18942.79 / 733`; `18783.62 / 691`; `18766.98 / 677` | Allowing phase2 to score unstarted tasks even when started candidates exist preserves the within-horizon task set for the high-output schedules but repacks the after-horizon completion tail with far fewer setup transitions. Zero-setup bonus variants under this mode produced incomplete solutions and were rejected. |
 
 Automation note:
 
 `search_relaxed_frontier.py` now anchors at `start_guard=330`, samples the exposed finish-penalty knobs, and accepts `--defer-task`, so future automated searches start from the current high-output basin instead of the older `18875` basin.
+
+The search script also accepts `--phase2-allow-unstarted`; this should be enabled for current frontier searches because it preserves high-output completions while substantially lowering total positive setup count.
