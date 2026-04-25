@@ -29,6 +29,7 @@ New legal high-output point:
 | `pareto_18767_677.json` | 18766.98 | 677 | Add `--phase2-allow-unstarted` to the low-tail defer bundle; preserves the prior low-tail weight while removing 91 positive setups |
 | `pareto_18784_691.json` | 18783.62 | 691 | Keep both `NP71371` and `NP99641` out of the low-tail defer bundle under the relaxed phase2 gate |
 | `pareto_18943_733.json` | 18942.79 | 733 | Add `--phase2-allow-unstarted` to the surface setup bridge; same completed weight as `18943 / 835` with 102 fewer positive setups |
+| `pareto_18946_716.json` | 18945.59 | 716 | Extend the machine-level tail repack with `NP8539`, `NQ1152`, and `NQ1144` operation-machine overrides; same completed weight as `18946 / 729` with 13 fewer positive setups |
 | `pareto_18946_729.json` | 18945.59 | 729 | Add `--force-machine YT0294:8=4#拉弯矫` on top of the high-output phase2-gate point; same completed weight as `18946 / 737` with 8 fewer positive setups |
 | `pareto_18946_737.json` | 18945.59 | 737 | Add `--phase2-allow-unstarted` to the high-output `NP99641` surface-tail sacrifice; same completed weight as `18946 / 839` with 102 fewer positive setups |
 
@@ -80,7 +81,7 @@ Tail-sacrifice probes improved the low-setup region to `18766.98 / 768` and adde
 | Surface-treatment tail sacrifice | `18945.59 / 839` | Deferring `NP99641` on top of the five-KB defer set pulls `NQ08711/YT0627/NQ08691/NQ08692` inside the horizon while losing `YT0736/ED5683/NP99641`, netting `+13.18` completed weight. |
 | Surface setup bridge | `18942.79 / 835` | Adding `NQ02772` to the `NP99641` defer set swaps in `NQ0507` and removes four positive setup transitions at a small `-2.80` weight cost. |
 | Phase2 unstarted candidate gate | `18945.59 / 737`; `18942.79 / 733`; `18783.62 / 691`; `18766.98 / 677` | Allowing phase2 to score unstarted tasks even when started candidates exist preserves the within-horizon task set for the high-output schedules but repacks the after-horizon completion tail with far fewer setup transitions. Zero-setup bonus variants under this mode produced incomplete solutions and were rejected. |
-| Machine-level tail repack | `18945.59 / 729` | Forcing late `YT0294` final operation to `4#拉弯矫` leaves the completed-within-horizon task set unchanged while lowering positive setups. Forcing `YT0294` to `4#纵剪` or moving its previous operation to `5#拉弯矫` caused an incomplete task; extending the same final-machine rule to `YT0295` reduced weight or became invalid. |
+| Machine-level tail repack | `18945.59 / 716` | Forcing late `YT0294:8=4#拉弯矫`, `NP8539:3=4#冷轧机`, `NP8539:4=3#拉弯矫`, `NQ1152:10=3#重卷机`, and `NQ1144:5=3#重卷机` leaves the completed-within-horizon task set unchanged while lowering positive setups. Rejected extensions include `YT0294` to `4#纵剪`, `YT0295` final-machine overrides, `YT0312:4=3#重卷机`, and `ED5608:1=2#重卷机` because they reduced weight or produced incomplete schedules. |
 
 Automation note:
 
