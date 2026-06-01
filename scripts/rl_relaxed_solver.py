@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""核心求解器和 relaxed 口径校验逻辑。
+
+本文件负责三件事：
+1. 读取原始算例 JSON，并转换为求解器使用的紧凑数据结构。
+2. 用两阶段启发式调度器生成完整解。
+3. 在“组批机器无限产能”口径下校验解是否合法。
+
+时间口径：内部统一使用分钟轴；写出解文件时再转换成日历时间字符串。
+维修窗口：内部按半开区间 [start, end) 判断冲突。
+setup 统计：只统计普通机器上 setup_time > 0 的相邻工序切换。
+"""
 from __future__ import annotations
 
 import argparse
@@ -22,16 +33,19 @@ INF = 10**18
 
 
 def to_int(value: Any) -> Optional[int]:
+    """把 JSON 里的数值字段转成 int；None 保持为 None。"""
     if value is None:
         return None
     return int(value)
 
 
 def to_float(value: Any) -> float:
+    """把 JSON 里的数值字段转成 float。"""
     return float(value)
 
 
 def parse_dt(value: str) -> datetime:
+    """兼容两种常见日期格式，统一转成 datetime。"""
     for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(value, fmt)
@@ -41,27 +55,43 @@ def parse_dt(value: str) -> datetime:
 
 
 def fmt_dt(start_dt: datetime, current_time: int, value: int) -> str:
+    """把内部分钟轴时间转换为输出 JSON 需要的日期字符串。"""
     return (start_dt + timedelta(minutes=value - current_time)).strftime("%Y/%m/%d %H:%M:%S")
 
 
 def normalize_input_path(path: Path) -> str:
+    """把输入路径标准化，作为缓存签名的一部分。"""
     return str(path.resolve())
 
 
 def input_signature(path: Path) -> tuple[str, int, int]:
+    """记录输入文件路径、大小和修改时间，用来判断缓存是否失效。"""
     stat = path.stat()
     return (normalize_input_path(path), stat.st_size, stat.st_mtime_ns)
 
 
 @dataclass(frozen=True)
 class CandidateSpec:
+    """选定路径下某道工序的一个候选机器。
+
+    一道工序通常可以在多台机器上加工，每台机器对应不同加工时长、
+    优先级和批容量。调度时的“动作”本质上就是从这些候选机器里选一个。
+    """
+
     machine_id: str
     process_time: int
     priority: float
+    batch_size: int
 
 
 @dataclass(frozen=True)
 class QTimeSpec:
+    """两道工序事件之间的最小/最大间隔约束。
+
+    start_type/end_type 决定约束锚点是工序开始还是结束。例如“上一道结束到
+    下一道开始至少等待 30 分钟”会转成一个 lower bound。
+    """
+
     start_seq: str
     start_type: str
     end_seq: str
@@ -72,9 +102,16 @@ class QTimeSpec:
 
 @dataclass
 class ProcessSpec:
+    """调度器使用的紧凑工序表示。
+
+    原始 JSON 的工序字段较多，本结构仅保留求解和校验所需字段：
+    工序编号、是否组批、跨厂可转运关系、候选机器和最短加工时间。
+    """
+
     seq: str
     proc_id: str
     is_batch: bool
+    batch_family: tuple[str, ...]
     diff_factory_info: tuple[tuple[str, str], ...]
     candidates: tuple[CandidateSpec, ...]
     min_process_time: int
@@ -82,6 +119,13 @@ class ProcessSpec:
 
 @dataclass
 class TaskSpec:
+    """已选路径下的工件模型，包含预计算的乐观尾部时间。
+
+    每个任务在 build_instance() 阶段已经选定一条加工路径，所以调度器不再
+    同时处理多条路径。optimistic_total_from / optimistic_nonbatch_from 用于
+    快速估计“如果现在排这道工序，后面最理想还需要多久”。
+    """
+
     task_id: str
     earliest_ava_time: int
     delivery_time: int
@@ -98,6 +142,8 @@ class TaskSpec:
 
 @dataclass
 class MachineSpec:
+    """机器日历与所属工厂信息。"""
+
     machine_id: str
     factory: str
     down_intervals: tuple[tuple[int, int], ...]
@@ -105,6 +151,8 @@ class MachineSpec:
 
 @dataclass
 class ScheduledOp:
+    """分钟轴上的一条已排工序记录。"""
+
     task_id: str
     seq: str
     path_id: str
@@ -115,6 +163,13 @@ class ScheduledOp:
 
 @dataclass
 class CandidateEval:
+    """一个可行动作及其评分策略所需的派生特征。
+
+    evaluate_candidate() 会把硬约束都检查完，能生成 CandidateEval 就说明
+    该动作当前可行。score_candidate() 和 score_candidate_phase2() 只负责
+    在可行动作之间做偏好排序。
+    """
+
     task_id: str
     idx: int
     machine_id: str
@@ -131,6 +186,8 @@ class CandidateEval:
 
 @dataclass
 class InstanceData:
+    """求解和校验共用的解析后算例缓存。"""
+
     source_input: str
     source_size: int
     source_mtime_ns: int
@@ -145,6 +202,7 @@ class InstanceData:
 
 
 def parse_named_float_map(raw: str) -> dict[str, float]:
+    """解析 name=value,name=value 形式的浮点参数。"""
     result: dict[str, float] = {}
     text = raw.strip()
     if not text:
@@ -161,6 +219,7 @@ def parse_named_float_map(raw: str) -> dict[str, float]:
 
 
 def parse_named_str_map(raw: str) -> dict[str, str]:
+    """解析 name=value,name=value 形式的字符串参数。"""
     result: dict[str, str] = {}
     text = raw.strip()
     if not text:
@@ -177,6 +236,7 @@ def parse_named_str_map(raw: str) -> dict[str, str]:
 
 
 def parse_force_machine_map(raw: str) -> dict[tuple[str, str], str]:
+    """解析 task_id:seq=machine_id 形式的强制机器参数。"""
     result: dict[tuple[str, str], str] = {}
     text = raw.strip()
     if not text:
@@ -199,6 +259,7 @@ def parse_force_machine_map(raw: str) -> dict[tuple[str, str], str]:
 
 
 def parse_name_set(raw: str) -> set[str]:
+    """解析逗号分隔的名称集合。"""
     text = raw.strip()
     if not text:
         return set()
@@ -206,6 +267,7 @@ def parse_name_set(raw: str) -> set[str]:
 
 
 def infer_force_path_map_from_solution(output_path: Path) -> dict[str, str]:
+    """从已有解文件中恢复每个任务选择的加工路径。"""
     if not output_path.exists():
         return {}
     with output_path.open("r", encoding="utf-8") as fh:
@@ -229,18 +291,26 @@ def path_strategy_signature(
     path_wait_weight: float,
     path_machine_penalties: dict[str, float],
     force_path_map: dict[str, str],
+    current_time_override: Optional[int],
+    zero_current_time: bool,
+    maintenance_shift: Optional[int],
 ) -> str:
+    """为会影响算例解析结果的路径/时间策略生成缓存键。"""
     payload = {
         "path_nonbatch_mult": round(path_nonbatch_mult, 6),
         "path_batch_weight": round(path_batch_weight, 6),
         "path_wait_weight": round(path_wait_weight, 6),
         "path_machine_penalties": dict(sorted(path_machine_penalties.items())),
         "force_path_map": dict(sorted(force_path_map.items())),
+        "current_time_override": current_time_override,
+        "zero_current_time": zero_current_time,
+        "maintenance_shift": maintenance_shift,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def register_pickle_compat_aliases() -> None:
+    """兼容早期以 __main__ 执行本文件时生成的 pickle 缓存。"""
     main_mod = sys.modules.get("__main__")
     if main_mod is None:
         return
@@ -259,6 +329,8 @@ def register_pickle_compat_aliases() -> None:
 
 
 class SetupRowStore:
+    """基于 SQLite 的稀疏 setup 矩阵，并带一个小型行级 LRU 缓存。"""
+
     def __init__(self, db_path: Path, row_cache_size: int = 256) -> None:
         self.db_path = db_path
         self.row_cache_size = row_cache_size
@@ -266,22 +338,26 @@ class SetupRowStore:
         self.row_cache: OrderedDict[str, dict[str, int]] = OrderedDict()
 
     def connect(self) -> sqlite3.Connection:
+        """惰性打开 SQLite 连接，避免在对象构造阶段占用文件句柄。"""
         if self.conn is None:
             self.conn = sqlite3.connect(self.db_path)
         return self.conn
 
     def close(self) -> None:
+        """关闭 SQLite 连接；主流程 finally 中会调用。"""
         if self.conn is not None:
             self.conn.close()
             self.conn = None
 
     def _remove_db_files(self) -> None:
+        """删除 SQLite 主文件和 WAL/SHM 辅助文件。"""
         for suffix in ("", "-wal", "-shm"):
             target = Path(str(self.db_path) + suffix)
             if target.exists():
                 target.unlink()
 
     def _db_matches_input(self, input_path: Path) -> bool:
+        """检查 setup 缓存是否来自当前输入文件。"""
         if not self.db_path.exists():
             return False
         expected_path, expected_size, expected_mtime = input_signature(input_path)
@@ -304,6 +380,7 @@ class SetupRowStore:
         )
 
     def ensure(self, input_path: Path, force: bool = False) -> None:
+        """为当前输入文件创建或复用 setup 行数据库。"""
         if force:
             self.close()
             self._remove_db_files()
@@ -360,6 +437,7 @@ class SetupRowStore:
             conn.close()
 
     def _load_row(self, from_proc: str) -> dict[str, int]:
+        """按 from_proc 读取一整行 setup 数据，并放入 LRU 缓存。"""
         row = self.row_cache.get(from_proc)
         if row is not None:
             self.row_cache.move_to_end(from_proc)
@@ -375,12 +453,14 @@ class SetupRowStore:
         return row
 
     def get(self, from_proc: Optional[str], to_proc: str) -> int:
+        """查询两个工序之间的 setup 时间；没有前序时 setup 为 0。"""
         if not from_proc:
             return 0
         return self._load_row(from_proc).get(to_proc, 0)
 
 
 def detect_input_json(root: Path) -> Path:
+    """当未传入 --input 时，在 data/data1 下寻找默认 JSON。"""
     data_dir = root / "data" / "data1"
     preferred_names = (
         "实际规模输入数据.json",
@@ -403,6 +483,12 @@ def choose_path(
     path_machine_penalties: Optional[dict[str, float]] = None,
     force_path_map: Optional[dict[str, str]] = None,
 ) -> str:
+    """在派工前为任务选择一条加工路径。
+
+    路径选择会最小化一个未来负载代理值：普通工序时间、组批工序时间、
+    q-time 最小等待和可选机器惩罚。手动 force-path 会优先生效，
+    这样历史 Pareto 实验可以被复现。
+    """
     if force_path_map and task_id in force_path_map:
         forced = force_path_map[task_id]
         if forced not in task_payload["process_path"]:
@@ -458,6 +544,7 @@ def build_task_spec(
     path_machine_penalties: Optional[dict[str, float]] = None,
     force_path_map: Optional[dict[str, str]] = None,
 ) -> TaskSpec:
+    """把一个原始任务 payload 转成已选路径下的紧凑任务模型。"""
     path_id = choose_path(
         task_id,
         task_payload,
@@ -506,6 +593,7 @@ def build_task_spec(
                         machine_id=machine_id,
                         process_time=to_int(info["process_time"]),
                         priority=to_float(info["priority"]),
+                        batch_size=max(1, int(float(info.get("curr_batch_size", 1) or 1))),
                     )
                     for machine_id, info in proc_payload["eqp_list"].items()
                 ),
@@ -517,6 +605,7 @@ def build_task_spec(
                 seq=seq,
                 proc_id=str((task_id, path_id, seq)),
                 is_batch=bool(proc_payload["is_batch_type"]),
+                batch_family=tuple(str(item) for item in proc_payload.get("batch_family", ())),
                 diff_factory_info=tuple(tuple(pair) for pair in proc_payload["diff_factory_info"]),
                 candidates=candidates,
                 min_process_time=min(item.process_time for item in candidates),
@@ -525,6 +614,8 @@ def build_task_spec(
 
     optimistic_total_from = [0 for _ in range(len(process_order) + 1)]
     optimistic_nonbatch_from = [0 for _ in range(len(process_order) + 1)]
+    # 乐观尾部时间是候选动作评分使用的下界。
+    # 该估计不提前扣除 setup、机器竞争和多数日历冲突，具体可行性由动作评估处理。
     for idx in range(len(process_order) - 1, -1, -1):
         proc = processes[idx]
         wait_after = sequential_waits[idx] if idx < len(process_order) - 1 else 0
@@ -561,13 +652,20 @@ def build_instance(
     path_wait_weight: float = 1.0,
     path_machine_penalties: Optional[dict[str, float]] = None,
     force_path_map: Optional[dict[str, str]] = None,
+    current_time_override: Optional[int] = None,
+    zero_current_time: bool = False,
+    maintenance_shift: Optional[int] = 0,
 ) -> InstanceData:
+    """把大型 JSON 算例解析成可缓存的紧凑对象。"""
     strategy_key = path_strategy_signature(
         path_nonbatch_mult=path_nonbatch_mult,
         path_batch_weight=path_batch_weight,
         path_wait_weight=path_wait_weight,
         path_machine_penalties=path_machine_penalties or {},
         force_path_map=force_path_map or {},
+        current_time_override=current_time_override,
+        zero_current_time=zero_current_time,
+        maintenance_shift=maintenance_shift,
     )
     if cache_path.exists() and not force and cache_path.stat().st_mtime >= input_path.stat().st_mtime:
         try:
@@ -600,12 +698,33 @@ def build_instance(
     with input_path.open("rb") as fh:
         horizon = next(ijson.items(fh, "config.max_output_horizon"))
 
+    raw_current_time = int(current_time)
+    if zero_current_time:
+        # 历史实验兼容模式：将输入 current_time 重新解释为分钟 0，
+        # 并可按原 current_time 平移维修窗口。
+        effective_current_time = 0
+        effective_maintenance_shift = (
+            raw_current_time if maintenance_shift is None else int(maintenance_shift)
+        )
+    else:
+        effective_current_time = (
+            raw_current_time if current_time_override is None else int(current_time_override)
+        )
+        effective_maintenance_shift = 0 if maintenance_shift is None else int(maintenance_shift)
+
     machines: dict[str, MachineSpec] = {}
     with input_path.open("rb") as fh:
         for machine_id, payload in ijson.kvitems(fh, "eqp"):
             intervals = []
             for start, end in payload["eqp_down_interval"]:
-                intervals.append((int(start), int(end) + 1))
+                # 内部统一把维修窗口存为半开区间 [start, end)。
+                # 输入中的结束点按闭区间理解，因此转换为半开区间时需要加 1 分钟。
+                intervals.append(
+                    (
+                        int(start) + effective_maintenance_shift,
+                        int(end) + effective_maintenance_shift + 1,
+                    )
+                )
             intervals.sort()
             machines[machine_id] = MachineSpec(
                 machine_id=machine_id,
@@ -639,7 +758,7 @@ def build_instance(
         source_input=normalize_input_path(input_path),
         source_size=input_path.stat().st_size,
         source_mtime_ns=input_path.stat().st_mtime_ns,
-        current_time=int(current_time),
+        current_time=effective_current_time,
         current_dt=str(current_dt),
         start_dt=parse_dt(str(current_dt)),
         horizon=int(horizon),
@@ -656,6 +775,13 @@ def build_instance(
 
 
 class RelaxedRLScheduler:
+    """面向 FJSP 派工环境的两阶段确定性策略。
+
+    第一阶段只接受乐观尾部仍可能在截止时间前完成的任务，以提高窗口内产量。
+    第二阶段补齐所有剩余任务，保证输出是完整排产。有限组批标志会让
+    p-batch 工序占用机器时间线，否则它们按 relaxed 无限产能处理。
+    """
+
     def __init__(
         self,
         instance: InstanceData,
@@ -683,6 +809,10 @@ class RelaxedRLScheduler:
         phase2_setup_per: float = 4.4,
         phase2_finish_per: float = 0.01,
         phase2_started_gate: bool = True,
+        finite_batch_capacity: bool = False,
+        batch_group_wait: int = 0,
+        batch_group_mixed_time: bool = False,
+        batch_group_any_time: bool = False,
     ) -> None:
         self.instance = instance
         self.setup_store = setup_store
@@ -709,6 +839,10 @@ class RelaxedRLScheduler:
         self.phase2_setup_per = phase2_setup_per
         self.phase2_finish_per = phase2_finish_per
         self.phase2_started_gate = phase2_started_gate
+        self.finite_batch_capacity = finite_batch_capacity
+        self.batch_group_wait = max(0, batch_group_wait)
+        self.batch_group_mixed_time = batch_group_mixed_time
+        self.batch_group_any_time = batch_group_any_time
 
         self.machine_free = {machine_id: instance.current_time for machine_id in instance.machines}
         self.machine_last_proc = {machine_id: None for machine_id in instance.machines}
@@ -721,6 +855,7 @@ class RelaxedRLScheduler:
         self.setup_count = 0
 
     def fit_after_maintenance(self, machine_id: str, earliest_start: int, duration: int) -> int:
+        """返回避开机器维修窗口后的最早可开工时间。"""
         start = max(earliest_start, self.instance.current_time)
         for down_start, down_end in self.instance.machines[machine_id].down_intervals:
             if start + duration <= down_start:
@@ -741,6 +876,7 @@ class RelaxedRLScheduler:
         return (from_factory, to_factory) in prev_proc.diff_factory_info
 
     def compute_bounds(self, task: TaskSpec, idx: int, machine_id: str, process_time: int) -> Optional[tuple[int, int]]:
+        """计算一个动作的释放、前序、转运和 q-time 时间边界。"""
         proc = task.processes[idx]
         lower = max(self.instance.current_time, task.earliest_ava_time)
         upper = INF
@@ -769,6 +905,7 @@ class RelaxedRLScheduler:
         return lower, upper
 
     def has_forward_compatibility(self, task: TaskSpec, idx: int, machine_id: str) -> bool:
+        """排除会导致下一道跨厂转运不可行的机器选择。"""
         if idx >= len(task.processes) - 1:
             return True
         current_proc = task.processes[idx]
@@ -779,13 +916,26 @@ class RelaxedRLScheduler:
         )
 
     def process_family(self, proc: ProcessSpec) -> tuple[Any, ...]:
+        """用于同工艺/零 setup 连续奖励的 family 键。"""
         return (
             proc.seq,
             proc.is_batch,
             tuple((candidate.machine_id, candidate.process_time) for candidate in proc.candidates),
         )
 
+    def candidate_for_eval(self, eval_item: CandidateEval) -> CandidateSpec:
+        task = self.instance.tasks[eval_item.task_id]
+        proc = task.processes[eval_item.idx]
+        candidate = next(
+            item for item in proc.candidates if item.machine_id == eval_item.machine_id
+        )
+        return candidate
+
+    def batch_family(self, proc: ProcessSpec) -> tuple[str, ...]:
+        return getattr(proc, "batch_family", ())
+
     def evaluate_candidate(self, task_id: str, machine_id: str) -> Optional[CandidateEval]:
+        """构造可行动作；若任一硬约束失败则返回 None。"""
         task = self.instance.tasks[task_id]
         idx = self.next_idx[task_id]
         proc = task.processes[idx]
@@ -805,12 +955,15 @@ class RelaxedRLScheduler:
         setup_time = 0
         same_family = False
         zero_setup = False
-        if not proc.is_batch:
+        if not proc.is_batch or self.finite_batch_capacity:
             lower = max(lower, self.machine_free[machine_id])
-            setup_time = self.setup_store.get(self.machine_last_proc[machine_id], proc.proc_id)
-            lower = max(lower, self.machine_free[machine_id] + setup_time)
-            same_family = self.machine_last_family[machine_id] == self.process_family(proc)
-            zero_setup = self.machine_last_proc[machine_id] is not None and setup_time == 0
+            if not proc.is_batch:
+                # 仅普通机器序列计入 setup。relaxed 轨道下，
+                # 组批工序不占用机器时间线。
+                setup_time = self.setup_store.get(self.machine_last_proc[machine_id], proc.proc_id)
+                lower = max(lower, self.machine_free[machine_id] + setup_time)
+                same_family = self.machine_last_family[machine_id] == self.process_family(proc)
+                zero_setup = self.machine_last_proc[machine_id] is not None and setup_time == 0
 
         start = self.fit_after_maintenance(machine_id, lower, candidate.process_time)
         if start > upper:
@@ -833,6 +986,7 @@ class RelaxedRLScheduler:
         )
 
     def batch_choice(self, task_id: str) -> Optional[CandidateEval]:
+        """在普通派工前贪心推进 relaxed 组批前缀。"""
         task = self.instance.tasks[task_id]
         idx = self.next_idx[task_id]
         proc = task.processes[idx]
@@ -848,6 +1002,7 @@ class RelaxedRLScheduler:
         return None if best is None else best[1]
 
     def record_schedule(self, eval_item: CandidateEval) -> None:
+        """把一个非合批工序写入调度状态。"""
         task = self.instance.tasks[eval_item.task_id]
         proc = task.processes[eval_item.idx]
         entry = ScheduledOp(
@@ -868,8 +1023,117 @@ class RelaxedRLScheduler:
             self.machine_free[eval_item.machine_id] = eval_item.finish
             self.machine_last_proc[eval_item.machine_id] = proc.proc_id
             self.machine_last_family[eval_item.machine_id] = self.process_family(proc)
+        elif self.finite_batch_capacity:
+            self.machine_free[eval_item.machine_id] = eval_item.finish
+
+    def record_batch_group(
+        self,
+        best: CandidateEval,
+        candidate_pool: list[CandidateEval],
+    ) -> None:
+        """在一台机器上写入一个有限 p-batch 批组。
+
+        被选中的候选作为锚点。其他同 family 候选如果时间足够接近、
+        容量允许，并且能共享同一个避开维修的开工时间和最大批时长，
+        就可以加入该批。
+        """
+        task = self.instance.tasks[best.task_id]
+        proc = task.processes[best.idx]
+        chosen = self.candidate_for_eval(best)
+        family = self.batch_family(proc)
+        process_time = chosen.process_time
+        capacity = getattr(chosen, "batch_size", 1)
+        group = [best]
+        group_start = best.start
+
+        extras = [
+            item
+            for item in candidate_pool
+            if item.task_id != best.task_id and item.machine_id == best.machine_id
+        ]
+        extras.sort(
+            key=lambda item: (
+                self.instance.tasks[item.task_id].weight,
+                -item.option_priority,
+                -item.start,
+                item.task_id,
+            ),
+            reverse=True,
+        )
+        for item in extras:
+            extra_task = self.instance.tasks[item.task_id]
+            extra_proc = extra_task.processes[item.idx]
+            if not extra_proc.is_batch:
+                continue
+            extra_candidate = self.candidate_for_eval(item)
+            if self.batch_family(extra_proc) != family:
+                continue
+            if extra_candidate.process_time != process_time and (
+                not (self.batch_group_mixed_time or self.batch_group_any_time)
+                or (
+                    self.batch_group_mixed_time
+                    and not self.batch_group_any_time
+                    and extra_candidate.process_time > process_time
+                )
+            ):
+                continue
+            if item.start > best.start + self.batch_group_wait:
+                continue
+            next_start = max(group_start, item.start)
+            next_process_time = max(process_time, extra_candidate.process_time)
+            if next_start > best.upper_bound or next_start > item.upper_bound:
+                continue
+            if any(next_start > member.upper_bound for member in group):
+                continue
+            if self.fit_after_maintenance(best.machine_id, next_start, next_process_time) != next_start:
+                continue
+            next_capacity = min(capacity, getattr(extra_candidate, "batch_size", 1))
+            if len(group) + 1 > next_capacity:
+                continue
+            group.append(item)
+            capacity = next_capacity
+            group_start = next_start
+            process_time = next_process_time
+
+        finish = group_start + process_time
+        for item in group:
+            group_task = self.instance.tasks[item.task_id]
+            group_proc = group_task.processes[item.idx]
+            entry = ScheduledOp(
+                task_id=group_task.task_id,
+                seq=group_proc.seq,
+                path_id=group_task.path_id,
+                machine_id=best.machine_id,
+                start=group_start,
+                finish=finish,
+            )
+            self.task_records[group_task.task_id].append(entry)
+            self.proc_records[group_proc.proc_id] = entry
+            self.next_idx[group_task.task_id] += 1
+            self.task_status[group_task.task_id] = "active"
+        self.machine_free[best.machine_id] = finish
+
+    def record_selected(
+        self,
+        best: CandidateEval,
+        candidate_pool: list[CandidateEval],
+    ) -> None:
+        """根据轨道口径写入单工序或有限组批批组。"""
+        task = self.instance.tasks[best.task_id]
+        proc = task.processes[best.idx]
+        if self.finite_batch_capacity and proc.is_batch:
+            self.record_batch_group(best, candidate_pool)
+        else:
+            self.record_schedule(best)
 
     def advance_batch_prefix(self, task_id: str, respect_horizon: bool) -> None:
+        """自动排入当前任务的 relaxed p-batch 前缀。
+
+        无限产能轨道中，p-batch 工序不消耗共享机器时间线，
+        因此只要任务内部约束允许，就可以立即向前推进。
+        """
+        if self.finite_batch_capacity:
+            return
         while self.task_status[task_id] in {"active", "deferred"}:
             task = self.instance.tasks[task_id]
             idx = self.next_idx[task_id]
@@ -888,6 +1152,7 @@ class RelaxedRLScheduler:
             self.record_schedule(choice)
 
     def score_candidate(self, eval_item: CandidateEval, min_start: int) -> tuple[float, int, int, str]:
+        """第一阶段评分：尽量提高截止产量，同时抑制 setup 失控。"""
         task = self.instance.tasks[eval_item.task_id]
         remaining_nb = max(task.optimistic_nonbatch_from[eval_item.idx], 1)
         density = task.weight / remaining_nb
@@ -911,6 +1176,7 @@ class RelaxedRLScheduler:
         return (score, -eval_item.start, -eval_item.finish, eval_item.task_id)
 
     def score_candidate_phase2(self, eval_item: CandidateEval, min_start: int) -> tuple[float, int, int, str]:
+        """第二阶段评分：补齐剩余任务，同时偏好更紧凑的尾部排产。"""
         task = self.instance.tasks[eval_item.task_id]
         remaining_nb = max(task.optimistic_nonbatch_from[eval_item.idx], 1)
         progress = eval_item.idx / max(len(task.processes) - 1, 1)
@@ -931,6 +1197,7 @@ class RelaxedRLScheduler:
         return (score, -eval_item.start, -eval_item.finish, eval_item.task_id)
 
     def rebuild_state_with_kept_tasks(self, kept_task_ids: set[str]) -> None:
+        """保留一组已完整任务，并重建调度状态。"""
         kept_records = {
             task_id: sorted(self.task_records[task_id], key=lambda item: int(item.seq))
             for task_id in kept_task_ids
@@ -953,23 +1220,32 @@ class RelaxedRLScheduler:
         for task_id, records in kept_records.items():
             task = self.instance.tasks[task_id]
             for idx, record in enumerate(records):
-                if not task.processes[idx].is_batch:
+                if not task.processes[idx].is_batch or self.finite_batch_capacity:
                     machine_ops[record.machine_id].append((record.start, record.finish, task.processes[idx].proc_id))
 
         proc_to_family = {}
+        batch_proc_ids: set[str] = set()
         for task_id in kept_records:
             task = self.instance.tasks[task_id]
             for proc in task.processes:
                 proc_to_family[proc.proc_id] = self.process_family(proc)
+                if proc.is_batch:
+                    batch_proc_ids.add(proc.proc_id)
 
         for machine_id, ops in machine_ops.items():
             ops.sort()
             prev_proc_id = None
             prev_finish = self.instance.current_time
             for _start, finish, proc_id in ops:
-                if prev_proc_id is not None and self.setup_store.get(prev_proc_id, proc_id) > 0:
+                proc_is_batch = proc_id in batch_proc_ids
+                if (
+                    not proc_is_batch
+                    and prev_proc_id is not None
+                    and self.setup_store.get(prev_proc_id, proc_id) > 0
+                ):
                     self.setup_count += 1
-                prev_proc_id = proc_id
+                if not proc_is_batch:
+                    prev_proc_id = proc_id
                 prev_finish = finish
             self.machine_free[machine_id] = prev_finish
             self.machine_last_proc[machine_id] = prev_proc_id
@@ -984,20 +1260,26 @@ class RelaxedRLScheduler:
             else:
                 self.task_status[task_id] = "active"
 
-    def repair_incomplete_tasks(self) -> None:
-        kept_task_ids = {
-            task_id
-            for task_id, task in self.instance.tasks.items()
-            if len(self.task_records.get(task_id, [])) == len(task.processes)
-        }
-        if len(kept_task_ids) == len(self.instance.tasks):
-            return
+    def repair_incomplete_tasks(self, max_rounds: int = 6) -> None:
+        """迭代丢弃不完整任务并重跑第二阶段，直到尽量补全。"""
+        previous_kept_count = -1
+        for _ in range(max_rounds):
+            kept_task_ids = {
+                task_id
+                for task_id, task in self.instance.tasks.items()
+                if len(self.task_records.get(task_id, [])) == len(task.processes)
+            }
+            if len(kept_task_ids) == len(self.instance.tasks):
+                return
+            if len(kept_task_ids) == previous_kept_count:
+                break
+            previous_kept_count = len(kept_task_ids)
 
-        self.rebuild_state_with_kept_tasks(kept_task_ids)
-
-        self.run_phase2_completion_loop()
+            self.rebuild_state_with_kept_tasks(kept_task_ids)
+            self.run_phase2_completion_loop()
 
     def run_phase2_completion_loop(self) -> None:
+        """求解和修复过程共用的第二阶段补齐循环。"""
         for task_id in self.instance.tasks:
             if self.task_status[task_id] == "active":
                 self.advance_batch_prefix(task_id, respect_horizon=False)
@@ -1015,7 +1297,7 @@ class RelaxedRLScheduler:
                     continue
                 unfinished += 1
                 proc = task.processes[idx]
-                if proc.is_batch:
+                if proc.is_batch and not self.finite_batch_capacity:
                     self.advance_batch_prefix(task_id, respect_horizon=False)
                     continue
                 for candidate in proc.candidates:
@@ -1037,16 +1319,19 @@ class RelaxedRLScheduler:
                 if self.phase2_started_gate and started_candidates
                 else feasible_candidates
             )
+            # phase2 gate 保留“优先补齐已开工任务”的原始行为；
+            # 只有实验显式允许时，未开工任务才会一起竞争。
             min_start = min(item.start for item in candidate_pool)
             shortlist = [
                 item for item in candidate_pool if item.start <= min_start + max(self.lookahead, 360)
             ]
             best = max(shortlist, key=lambda item: self.score_candidate_phase2(item, min_start))
-            self.record_schedule(best)
+            self.record_selected(best, candidate_pool)
             self.task_status[best.task_id] = "active"
             self.advance_batch_prefix(best.task_id, respect_horizon=False)
 
     def find_internal_machine_violations(self) -> list[tuple[str, str, str, str, str]]:
+        """检测修复重放状态时产生的 setup/重叠冲突。"""
         entries_by_machine: dict[str, list[tuple[int, int, str, str]]] = defaultdict(list)
         for task_id, records in self.task_records.items():
             task = self.instance.tasks[task_id]
@@ -1075,6 +1360,7 @@ class RelaxedRLScheduler:
         return violations
 
     def repair_setup_violations(self, max_rounds: int = 3) -> None:
+        """围绕检测到的机器冲突丢弃相关任务，再重新补齐。"""
         for _ in range(max_rounds):
             violations = self.find_internal_machine_violations()
             if not violations:
@@ -1088,18 +1374,21 @@ class RelaxedRLScheduler:
                 and task_id not in reset_task_ids
             }
             if not kept_task_ids and reset_task_ids:
-                # Fall back to the current state rather than wiping everything.
+                # 若没有可保留任务，则维持当前状态，避免将排产整体清空。
                 return
             self.rebuild_state_with_kept_tasks(kept_task_ids)
             self.run_phase2_completion_loop()
 
     def solve(self) -> dict[str, list[ScheduledOp]]:
+        """执行第一阶段、第二阶段和轻量修复，生成完整排产。"""
         for task_id in self.instance.tasks:
             if task_id in self.defer_task_ids:
                 self.task_status[task_id] = "deferred"
                 continue
             self.advance_batch_prefix(task_id, respect_horizon=True)
 
+        # 第一阶段：只派工乐观完工时间仍能落在 horizon 内的任务。
+        # 其他任务推迟到补齐阶段，避免迟交尾部阻塞高价值准时任务。
         while True:
             feasible_candidates: list[CandidateEval] = []
 
@@ -1112,7 +1401,7 @@ class RelaxedRLScheduler:
                     self.task_status[task_id] = "done"
                     continue
                 proc = task.processes[idx]
-                if proc.is_batch:
+                if proc.is_batch and not self.finite_batch_capacity:
                     self.advance_batch_prefix(task_id, respect_horizon=True)
                     continue
 
@@ -1143,10 +1432,11 @@ class RelaxedRLScheduler:
                 item for item in feasible_candidates if item.start <= min_start + self.lookahead
             ]
             best = max(shortlist, key=lambda item: self.score_candidate(item, min_start))
-            self.record_schedule(best)
+            self.record_selected(best, feasible_candidates)
             self.task_status[best.task_id] = "active"
             self.advance_batch_prefix(best.task_id, respect_horizon=True)
 
+        # 第二阶段：重新激活 deferred 任务，补完整个算例。
         for task_id, status in list(self.task_status.items()):
             if status == "deferred":
                 self.task_status[task_id] = "active"
@@ -1166,7 +1456,7 @@ class RelaxedRLScheduler:
                     continue
                 unfinished += 1
                 proc = task.processes[idx]
-                if proc.is_batch:
+                if proc.is_batch and not self.finite_batch_capacity:
                     self.advance_batch_prefix(task_id, respect_horizon=False)
                     continue
                 for candidate in proc.candidates:
@@ -1189,12 +1479,13 @@ class RelaxedRLScheduler:
                 if self.phase2_started_gate and started_candidates
                 else feasible_candidates
             )
+            # 第二阶段使用更宽候选窗口，降低长尾链路在修复阶段陷入局部死角的概率。
             min_start = min(item.start for item in candidate_pool)
             shortlist = [
                 item for item in candidate_pool if item.start <= min_start + max(self.lookahead, 360)
             ]
             best = max(shortlist, key=lambda item: self.score_candidate_phase2(item, min_start))
-            self.record_schedule(best)
+            self.record_selected(best, candidate_pool)
             self.task_status[best.task_id] = "active"
             self.advance_batch_prefix(best.task_id, respect_horizon=False)
 
@@ -1203,6 +1494,7 @@ class RelaxedRLScheduler:
         return self.task_records
 
     def metrics(self) -> dict[str, Any]:
+        """计算生成后立即打印的求解器侧快速指标。"""
         completed_weight = 0.0
         completed_tasks = 0
         late_completed_tasks = 0
@@ -1234,6 +1526,11 @@ class RelaxedRLScheduler:
 
 
 def dump_solution(instance: InstanceData, task_records: dict[str, list[ScheduledOp]], output_path: Path) -> None:
+    """把内部分钟轴排产结果写成提交/校验使用的 JSON 格式。
+
+    内部记录只保存分钟值，输出文件要求日历时间字符串，因此本函数使用
+    fmt_dt() 按 instance.current_time 和 instance.start_dt 做一次转换。
+    """
     payload = {"task": {}}
     for task_id in sorted(task_records):
         records = sorted(task_records[task_id], key=lambda item: int(item.seq))
@@ -1253,6 +1550,11 @@ def dump_solution(instance: InstanceData, task_records: dict[str, list[Scheduled
 
 
 def load_solution_records(output_path: Path) -> dict[str, list[ScheduledOp]]:
+    """读取解文件，并把日历时间字符串转回 ScheduledOp 记录。
+
+    注意：本函数读出的 start/finish 仍是 datetime。validate_solution()
+    会再结合 instance.current_time 把它们转成分钟轴。
+    """
     with output_path.open("r", encoding="utf-8") as fh:
         payload = json.load(fh)
     records: dict[str, list[ScheduledOp]] = {}
@@ -1283,6 +1585,19 @@ def validate_solution(
     setup_store: SetupRowStore,
     output_path: Path,
 ) -> tuple[list[str], dict[str, Any]]:
+    """按 relaxed 口径校验解文件并返回错误列表和指标。
+
+    relaxed 口径的含义是：普通机器严格检查顺序、setup 和重叠；
+    p-batch 组批工序不检查有限容量，也不要求同一批内 family/批时长一致。
+    因此，有限组批解需要再用 validate_batch_solution.py 单独校验。
+
+    校验内容包括：
+    1. 输出是否包含所有任务，以及每个任务是否覆盖选中路径的全部工序。
+    2. 每道工序的 path_id、候选机器、加工时长和维修窗口是否正确。
+    3. 释放时间、前序约束、跨厂转运和 q-time 上下界是否满足。
+    4. 普通机器上相邻工序是否留足 setup 时间，并统计正 setup 次数。
+    5. 在 horizon 内完成的任务数量和产量。
+    """
     raw_records = load_solution_records(output_path)
     errors: list[str] = []
     nonbatch_by_machine: dict[str, list[tuple[int, int, str, str]]] = defaultdict(list)
@@ -1307,11 +1622,13 @@ def validate_solution(
             continue
         fully_scheduled_tasks += 1
 
+        task_has_errors = False
         proc_records: dict[str, ScheduledOp] = {}
         for idx, record in enumerate(parsed):
             proc = task.processes[idx]
             if record.path_id != task.path_id:
                 errors.append(f"{task_id}:{record.seq} path_id mismatch")
+                task_has_errors = True
                 continue
 
             machine_candidate = next(
@@ -1320,6 +1637,7 @@ def validate_solution(
             )
             if machine_candidate is None:
                 errors.append(f"{task_id}:{record.seq} invalid machine {record.machine_id}")
+                task_has_errors = True
                 continue
 
             start_min = instance.current_time + int(
@@ -1330,11 +1648,13 @@ def validate_solution(
             )
             if finish_min - start_min != machine_candidate.process_time:
                 errors.append(f"{task_id}:{record.seq} duration mismatch")
+                task_has_errors = True
                 continue
 
             for down_start, down_end in instance.machines[record.machine_id].down_intervals:
                 if not (finish_min <= down_start or start_min >= down_end):
                     errors.append(f"{task_id}:{record.seq} overlaps maintenance")
+                    task_has_errors = True
                     break
 
             scheduled = ScheduledOp(
@@ -1363,6 +1683,7 @@ def validate_solution(
                 prev_record = proc_records.get(prev_proc.proc_id)
                 if prev_record is None:
                     errors.append(f"{task_id}:{record.seq} missing predecessor record")
+                    task_has_errors = True
                     continue
                 from_factory = instance.machines[prev_record.machine_id].factory
                 to_factory = instance.machines[proc_record.machine_id].factory
@@ -1371,15 +1692,23 @@ def validate_solution(
                     to_factory,
                 ) not in prev_proc.diff_factory_info:
                     errors.append(f"{task_id}:{record.seq} illegal factory transfer")
+                    task_has_errors = True
                 lower = max(
                     lower,
                     prev_record.finish
                     + instance.transitions.get(prev_record.machine_id, {}).get(proc_record.machine_id, 0),
                 )
             for qtime in task.incoming_qtimes[idx]:
-                start_anchor = proc_records[
-                    task.processes[task.seq_to_idx[qtime.start_seq]].proc_id
-                ]
+                anchor_idx = task.seq_to_idx.get(qtime.start_seq)
+                if anchor_idx is None:
+                    errors.append(f"{task_id}:{record.seq} q-time anchor seq not in selected path")
+                    task_has_errors = True
+                    continue
+                start_anchor = proc_records.get(task.processes[anchor_idx].proc_id)
+                if start_anchor is None:
+                    errors.append(f"{task_id}:{record.seq} missing q-time anchor record")
+                    task_has_errors = True
+                    continue
                 anchor = start_anchor.start if qtime.start_type == "start" else start_anchor.finish
                 offset = proc_record.finish - proc_record.start if qtime.end_type == "end" else 0
                 if qtime.min_interval is not None:
@@ -1388,12 +1717,14 @@ def validate_solution(
                     upper = min(upper, anchor + qtime.max_interval - offset)
             if proc_record.start < lower:
                 errors.append(f"{task_id}:{record.seq} violates lower time bound")
+                task_has_errors = True
             if proc_record.start > upper:
                 errors.append(f"{task_id}:{record.seq} violates upper time bound")
+                task_has_errors = True
 
         if len(parsed) == len(task.processes):
-            last = proc_records[task.processes[-1].proc_id]
-            if last.finish <= instance.horizon:
+            last = proc_records.get(task.processes[-1].proc_id)
+            if last is not None and not task_has_errors and last.finish <= instance.horizon:
                 completed_tasks += 1
                 completed_weight += task.weight
 
@@ -1424,6 +1755,11 @@ def validate_solution(
 
 
 def parse_args() -> argparse.Namespace:
+    """解析底层求解器命令行参数。
+
+    该入口保留大量实验参数，适合复现调参过程、执行网格搜索或排查问题。
+    若仅需使用当前预设参数求解，优先使用 solve_best_preset.py。
+    """
     parser = argparse.ArgumentParser(description="RL-style relaxed FJSP solver")
     parser.add_argument("command", choices=["solve", "validate"])
     parser.add_argument(
@@ -1438,6 +1774,27 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Override config.max_output_horizon (minutes) for both scheduling and metrics",
+    )
+    parser.add_argument(
+        "--current-time-override",
+        type=int,
+        default=None,
+        help="Override time.current_time without editing the input JSON",
+    )
+    parser.add_argument(
+        "--maintenance-shift",
+        type=int,
+        default=None,
+        help="Shift all eqp_down_interval bounds by this many minutes",
+    )
+    parser.add_argument(
+        "--zero-current-time",
+        action="store_true",
+        help=(
+            "Treat the input current moment as minute 0. This sets current_time=0 "
+            "and shifts maintenance windows by the original input current_time "
+            "unless --maintenance-shift is also provided."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -1514,12 +1871,39 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Let phase2 score all feasible tasks even when started-task candidates exist",
     )
+    parser.add_argument(
+        "--finite-batch-capacity",
+        action="store_true",
+        help="Treat batch machines as finite-capacity resources instead of relaxed infinite-capacity resources",
+    )
+    parser.add_argument(
+        "--batch-group-wait",
+        type=int,
+        default=0,
+        help="In finite-batch mode, let a selected batch wait this many minutes to form a same-family group",
+    )
+    parser.add_argument(
+        "--batch-group-mixed-time",
+        action="store_true",
+        help="In finite-batch mode, allow same-family shorter batch tasks to join a longer selected batch",
+    )
+    parser.add_argument(
+        "--batch-group-any-time",
+        action="store_true",
+        help="In finite-batch mode, allow same-family batch tasks with any process time and use the group maximum",
+    )
     parser.add_argument("--rebuild-instance", action="store_true")
     parser.add_argument("--rebuild-setup", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
+    """底层命令行入口：构建算例，执行求解或校验，并打印指标。
+
+    command=solve 会先生成解文件，再立即调用 relaxed 校验逻辑；
+    command=validate 只读取已有解文件并校验。自动化搜索脚本和预设入口
+    均会复用本入口暴露的参数能力。
+    """
     args = parse_args()
     root = args.root.resolve()
     input_path = args.input.resolve() if args.input else detect_input_json(root)
@@ -1548,6 +1932,13 @@ def main() -> int:
             f"[main] inferred force paths from output: {len(force_path_map)}",
             flush=True,
         )
+    maintenance_shift = args.maintenance_shift
+    if args.zero_current_time and maintenance_shift is None:
+        with input_path.open("rb") as fh:
+            maintenance_shift = int(next(ijson.items(fh, "time.current_time")))
+    elif maintenance_shift is None:
+        maintenance_shift = 0
+
     if path_machine_penalties or force_path_map or force_machine_map or task_bonus_map or defer_task_ids or any(
         value != default
         for value, default in (
@@ -1555,7 +1946,7 @@ def main() -> int:
             (args.path_batch_weight, 1.0),
             (args.path_wait_weight, 1.0),
         )
-    ):
+    ) or args.current_time_override is not None or maintenance_shift != 0 or args.zero_current_time:
         print(
             json.dumps(
                 {
@@ -1570,6 +1961,13 @@ def main() -> int:
                     },
                     "task_bonus": task_bonus_map,
                     "defer_task": sorted(defer_task_ids),
+                    "current_time_override": args.current_time_override,
+                    "maintenance_shift": maintenance_shift,
+                    "zero_current_time": args.zero_current_time,
+                    "finite_batch_capacity": args.finite_batch_capacity,
+                    "batch_group_wait": args.batch_group_wait,
+                    "batch_group_mixed_time": args.batch_group_mixed_time,
+                    "batch_group_any_time": args.batch_group_any_time,
                 },
                 ensure_ascii=False,
             ),
@@ -1585,7 +1983,21 @@ def main() -> int:
         path_wait_weight=args.path_wait_weight,
         path_machine_penalties=path_machine_penalties,
         force_path_map=force_path_map,
+        current_time_override=args.current_time_override,
+        zero_current_time=args.zero_current_time,
+        maintenance_shift=maintenance_shift,
     )
+    if args.zero_current_time or args.current_time_override is not None or maintenance_shift:
+        print(
+            json.dumps(
+                {
+                    "effective_current_time": instance.current_time,
+                    "maintenance_shift": maintenance_shift,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
     if args.horizon_override is not None:
         instance.horizon = int(args.horizon_override)
         print(f"[main] horizon override: {instance.horizon}", flush=True)
@@ -1620,6 +2032,10 @@ def main() -> int:
                 phase2_setup_per=args.phase2_setup_per,
                 phase2_finish_per=args.phase2_finish_per,
                 phase2_started_gate=not args.phase2_allow_unstarted,
+                finite_batch_capacity=args.finite_batch_capacity,
+                batch_group_wait=args.batch_group_wait,
+                batch_group_mixed_time=args.batch_group_mixed_time,
+                batch_group_any_time=args.batch_group_any_time,
             )
             task_records = scheduler.solve()
             dump_solution(instance, task_records, output_path)
