@@ -77,11 +77,14 @@ REQUIRED_FUNCTIONS = (
 
 
 CANDIDATE_MODES = (
+    "candidate_pool_operator",
+    "direct_action_operator",
+    "batch_group_operator",
+    "phase_window_operator",
     "new_dispatch_rule",
     "new_completion_rule",
-    "new_path_rule",
     "rule_prune_ablation",
-    "crossover_prune",
+    "operator_crossover_prune",
     "guarded_parameter_mutation",
 )
 
@@ -669,6 +672,34 @@ def build_strategy_api_spec() -> str:
         def score_phase2(features: dict) -> float:
             # 第二阶段：在固定内核给出的可行动作之间排序，目标是补齐完整合法解。
             return 0.0
+
+        # 以下是更高层的可选“算子接口”。它们只会收到固定内核已经判定可行的
+        # 候选动作，不能新增动作、机器或路径；若返回 None、越界或报错，内核会
+        # 自动回退到默认窗口和评分函数。
+
+        def select_phase1_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+            # 第一阶段候选池重构算子：返回 candidates 中要保留比较的局部下标。
+            # 可用于扩大/缩小窗口、优先闭环任务、筛除低密度高 setup 候选等。
+            return None
+
+        def select_phase2_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+            # 第二阶段候选池重构算子：可用于优先已启动任务、保护 qtime 紧迫任务、
+            # 或在低 setup 同族任务和尾部补齐任务之间做分层。
+            return None
+
+        def choose_phase1_action(candidates: list[dict], context: dict) -> int | None:
+            # 第一阶段动作选择算子：直接返回 candidates 的局部下标。
+            # 返回 None 表示继续由 score_phase1/default scoring 选择。
+            return None
+
+        def choose_phase2_action(candidates: list[dict], context: dict) -> int | None:
+            # 第二阶段动作选择算子：直接返回 candidates 的局部下标。
+            return None
+
+        def score_batch_extra(anchor: dict, extra: dict, context: dict) -> float | None:
+            # 有限组批成员扩展算子：当 anchor 已选中时，决定哪些同族额外任务
+            # 更适合加入同一批。返回 None 表示使用默认组批排序。
+            return None
         ```
 
         可覆盖配置键包括：
@@ -683,6 +714,8 @@ def build_strategy_api_spec() -> str:
         - path_nonbatch_mult, path_batch_weight, path_wait_weight,
           path_machine_penalty
         - task_bonus, defer_task
+        - operator_enable_hooks, operator_phase1_window, operator_phase2_window,
+          operator_max_candidates
 
         score_path(features) 的主要字段：
         - task_id, path_id, task_weight, task_priority
@@ -691,17 +724,28 @@ def build_strategy_api_spec() -> str:
         - nonbatch_time, batch_time, min_wait, max_wait_count
         - machine_count, min_option_count, avg_option_count, estimated_path_time
 
-        score_phase1/score_phase2(features) 的主要字段：
-        - phase, task_id, process_seq, process_index, process_count, path_id
+        score_phase1/score_phase2(features) 以及候选池算子中单个 candidate 的主要字段：
+        - candidate_index, phase, task_id, process_seq, process_index, process_count, path_id
         - machine_id, is_batch
-        - task_weight, task_priority, remaining_nonbatch_time, progress
-        - start, finish, estimated_final, horizon, current_time
+        - task_weight, task_priority, remaining_nonbatch_time, density, progress
+        - start, finish, estimated_final, can_finish_within_horizon, slack_to_horizon
+        - horizon, current_time
         - start_delay_from_min, setup_time, same_family, zero_setup, started
-        - option_priority, upper_bound, q_slack
+        - option_priority, upper_bound, has_qtime_bound, q_slack, q_slack_raw
+
+        候选池算子的 context 主要字段：
+        - phase, candidate_count, started_count, batch_count
+        - min_start, lookahead, horizon, current_time
 
         重要原则：
         - 不满足硬约束的动作根本不会传给你；你只负责在可行动作之间排序。
         - 路径选择也只能在输入 JSON 已有路径中排序；不能编造路径或机器。
+        - 候选池算子和动作选择算子只能返回传入 candidates 的下标；不能返回 task_id、
+          machine_id 或自造工序。越界、空列表、报错都会回退到默认逻辑。
+        - 只有当 `get_config()` 设置 `operator_enable_hooks=True` 时，候选池算子、
+          动作选择算子和组批扩展算子才会被调用；否则内核保持旧版评分函数路径。
+        - “算子自进化”优先尝试候选池分层、直接动作选择、组批成员排序和阶段窗口
+          调整，而不是只继续改 score_phase1/score_phase2 的线性权重。
         - 第一阶段偏产量：高权重、能闭环入窗、密度高、setup 少、同族连续优先。
         - 第二阶段偏完整：已启动任务、qtime 紧、尾部紧凑、setup 少优先。
         - 如果不确定自定义打分是否优于基线，`score_phase1/score_phase2` 可以返回
@@ -719,6 +763,9 @@ def build_strategy_api_spec() -> str:
           奖励/惩罚项；必须说明删除原因，例如产量下降、setup 反弹或与默认内核冲突。
         - 不要把 `upper_bound` 当作正向密度或正向奖励；很多无上界约束会接近 INF，
           会把排序完全冲坏。密度应使用 `task_weight / remaining_nonbatch_time`。
+        - `q_slack` 始终是可比较数值；无 qtime 上界时会取很大的 INF 近似值。
+          若要判断是否真的存在 qtime 约束，请使用 `has_qtime_bound` 或
+          `q_slack_raw is not None`。
         - 对测试算例1，默认不要把 `batch_group_any_time` 改成 True；它会显著增加
           过度合批和尾部补齐风险。除非上一轮报告明确证明它改善完整合法指标。
         - 不要一次大幅改动十几个权重。优先围绕当前最佳合法基线做 1-3 个小改动，
@@ -748,12 +795,13 @@ def build_analyzer_prompt(
 
         请输出 Markdown，包含：
         1. 主要问题；
-        2. 候选中的好片段：哪些参数、score_path、score_phase1、score_phase2
-           中的经验、评分因子或参数组合即使总分不佳也值得保留；
+        2. 候选中的好片段：哪些参数、score_path、score_phase1、score_phase2、
+           候选池算子、动作选择算子或组批成员算子即使总分不佳也值得保留；
         3. 候选中的坏片段：哪些规则导致产量下降、setup 上升或完整性风险；
         4. 待变异片段：哪些阈值或权重应小步调整；
         5. 可删除规则：哪些自定义规则应被禁用、消融或回退到固定内核默认评分；
-        6. 可新增规则：只基于文档和候选特征，提出新的排序因子或组合方式；
+        6. 可新增规则/算子：只基于文档和候选特征，提出新的候选池分层、
+           动作选择、组批扩展或排序因子组合方式；
         7. 下一轮策略修改建议；
         8. 禁止事项；
         9. 预期指标变化。
@@ -814,15 +862,26 @@ def build_generation_prompt(
         {mode}
 
         角色解释：
+        - candidate_pool_operator：必须实现 select_phase1_candidates 或
+          select_phase2_candidates 中至少一个候选池重构算子，并说明它如何改变
+          “哪些可行动作进入比较”；必须在 get_config 中设置 operator_enable_hooks=True。
+        - direct_action_operator：必须实现 choose_phase1_action 或 choose_phase2_action
+          中至少一个直接动作选择算子，并说明它与线性评分函数的区别；必须打开
+          operator_enable_hooks。
+        - batch_group_operator：必须实现 score_batch_extra，改变有限组批时额外
+          同族任务加入批组的优先级，同时保持 batch_group_any_time 默认为 False；
+          必须打开 operator_enable_hooks。
+        - phase_window_operator：必须通过 get_config 调整 operator_phase1_window 或
+          operator_phase2_window，并配合候选池算子控制候选窗口，不要只改普通权重；
+          必须打开 operator_enable_hooks。
         - new_dispatch_rule：必须在 score_phase1 中提出一个新的可解释派工规则，
           同时删除或禁用至少一个历史上无效的派工因子。
         - new_completion_rule：必须在 score_phase2 中提出一个新的可解释补全规则，
           同时删除或禁用至少一个历史上无效的补全因子。
-        - new_path_rule：必须在 score_path 中提出一个新的路径选择规则，或明确
-          删除自定义路径规则并说明为什么默认路径更可靠。
         - rule_prune_ablation：以删规则/消融为主，必须让至少一个 score_* 回退到
-          None，或从自定义打分中删除一个奖励/惩罚项。
-        - crossover_prune：从精英候选中吸收好片段，同时删除坏片段并做小幅变异。
+          None、删除一个奖励/惩罚项，或禁用一个候选池/动作选择算子。
+        - operator_crossover_prune：从精英候选中吸收好片段，同时删除坏片段并做
+          小幅变异；优先交叉候选池算子、动作选择算子和参数窗口。
         - guarded_parameter_mutation：主要调 get_config，但仍必须在
           describe_rule_changes() 中说明保留了哪些规则、参数为什么这样改，以及
           下一轮可尝试的规则建议；允许本候选只改参数。
@@ -839,7 +898,8 @@ def build_generation_prompt(
         - `describe_rule_changes()` 是简短审计，不是报告正文；避免大段注释和长篇
           docstring，把篇幅优先用于可执行规则、参数和阈值。
         - 至少一个函数的实质逻辑不同：get_config、score_path、score_phase1、
-          score_phase2 中至少一个要有新的规则结构或新的阈值组合。
+          score_phase2、select_phase*_candidates、choose_phase*_action、
+          score_batch_extra 中至少一个要有新的规则结构或新的阈值组合。
         - 至少一个关键参数或阈值与本轮已尝试候选不同，且差异要足以改变调度排序。
         - 如果沿用精英候选的好片段，必须同时引入一个明确的交叉、变异或删减动作。
         - 这里的“片段”只指策略经验、评分因子、函数逻辑或参数组合，不是排程解
@@ -885,11 +945,13 @@ def build_generation_prompt(
         {population[-26000:]}
 
         你可以做的“规则演化”包括：
-        - 产生新规则：围绕文档约束、候选特征和历史指标，自主提出新的排序规则。
-        - 交叉规则：组合两个精英候选中各自有效的 get_config/score_path/score_phase2。
+        - 产生新规则/算子：围绕文档约束、候选特征和历史指标，自主提出新的
+          候选池筛选、动作选择、组批扩展或排序规则。
+        - 交叉规则/算子：组合两个精英候选中各自有效的 get_config、候选池算子、
+          动作选择算子、score_path、score_phase2。
         - 变异规则：只改变 1-3 个权重或阈值，不要大面积重写。
-        - 删除规则：如果某条规则使产量下降、任务不完整或 setup 异常，可让对应
-          score_* 返回 None，回退到固定内核成熟评分。
+        - 删除规则/算子：如果某条规则使产量下降、任务不完整或 setup 异常，可让对应
+          score_* 或 select/choose hook 返回 None，回退到固定内核成熟逻辑。
         - 消融验证：保留参数不变，只删除一个疑似无效规则，验证它是否真的有贡献。
         - 以上操作都只发生在策略模块层面，不允许使用旧解的局部排程结构。
 

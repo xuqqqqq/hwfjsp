@@ -81,6 +81,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "batch_group_wait": 320,
     "batch_group_mixed_time": True,
     "batch_group_any_time": False,
+    "operator_phase1_window": None,
+    "operator_phase2_window": None,
+    "operator_max_candidates": 512,
+    "operator_enable_hooks": False,
 }
 
 
@@ -278,9 +282,25 @@ def strategy_path_overrides(
 class StrategyScheduler(RelaxedRLScheduler):
     """只把可行动作评分委托给策略模块的调度器。"""
 
-    def __init__(self, *args: Any, strategy_module: ModuleType, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        strategy_module: ModuleType,
+        operator_phase1_window: int | None = None,
+        operator_phase2_window: int | None = None,
+        operator_max_candidates: int = 512,
+        operator_enable_hooks: bool = False,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.strategy_module = strategy_module
+        self.strategy_enable_score_hooks = bool(
+            getattr(strategy_module, "ENABLE_SCORE_HOOKS", True)
+        )
+        self.operator_phase1_window = operator_phase1_window
+        self.operator_phase2_window = operator_phase2_window
+        self.operator_max_candidates = max(16, int(operator_max_candidates))
+        self.operator_enable_hooks = bool(operator_enable_hooks)
 
     def candidate_features(
         self,
@@ -294,7 +314,10 @@ class StrategyScheduler(RelaxedRLScheduler):
         proc = task.processes[eval_item.idx]
         remaining_nb = max(task.optimistic_nonbatch_from[eval_item.idx], 1)
         q_slack = eval_item.upper_bound - eval_item.start
+        has_qtime_bound = q_slack < INF // 2
+        exposed_q_slack = q_slack if has_qtime_bound else INF
         return {
+            "candidate_index": None,
             "phase": phase,
             "task_id": eval_item.task_id,
             "process_seq": proc.seq,
@@ -306,10 +329,13 @@ class StrategyScheduler(RelaxedRLScheduler):
             "task_weight": task.weight,
             "task_priority": task.priority,
             "remaining_nonbatch_time": remaining_nb,
+            "density": task.weight / remaining_nb,
             "progress": eval_item.idx / max(len(task.processes) - 1, 1),
             "start": eval_item.start,
             "finish": eval_item.finish,
             "estimated_final": eval_item.est_final,
+            "can_finish_within_horizon": eval_item.est_final <= self.instance.horizon,
+            "slack_to_horizon": self.instance.horizon - eval_item.est_final,
             "horizon": self.instance.horizon,
             "current_time": self.instance.current_time,
             "start_delay_from_min": eval_item.start - min_start,
@@ -319,12 +345,58 @@ class StrategyScheduler(RelaxedRLScheduler):
             "started": eval_item.started,
             "option_priority": eval_item.option_priority,
             "upper_bound": eval_item.upper_bound,
-            "q_slack": None if q_slack >= INF // 2 else q_slack,
+            "has_qtime_bound": has_qtime_bound,
+            "q_slack": exposed_q_slack,
+            "q_slack_raw": q_slack if has_qtime_bound else None,
+        }
+
+    def candidate_pool_features(
+        self,
+        candidates: list[CandidateEval],
+        min_start: int,
+        phase: str,
+    ) -> list[dict[str, Any]]:
+        """把候选池转成策略算子可读的列表特征。
+
+        `candidate_index` 是本次传入列表内的局部下标。策略只能返回这些下标，
+        固定内核会再次检查范围，越界或空选择都会回退到默认逻辑。
+        """
+
+        features: list[dict[str, Any]] = []
+        for index, item in enumerate(candidates):
+            payload = self.candidate_features(item, min_start, phase)
+            payload["candidate_index"] = index
+            features.append(payload)
+        return features
+
+    def operator_context(
+        self,
+        candidates: list[CandidateEval],
+        min_start: int,
+        phase: str,
+    ) -> dict[str, Any]:
+        """提供给策略算子的轻量上下文。"""
+
+        return {
+            "phase": phase,
+            "candidate_count": len(candidates),
+            "started_count": sum(1 for item in candidates if item.started),
+            "batch_count": sum(
+                1
+                for item in candidates
+                if self.instance.tasks[item.task_id].processes[item.idx].is_batch
+            ),
+            "min_start": min_start,
+            "lookahead": self.lookahead,
+            "horizon": self.instance.horizon,
+            "current_time": self.instance.current_time,
         }
 
     def strategy_score(self, eval_item: CandidateEval, min_start: int, phase: str) -> float | None:
         """调用策略打分函数；异常时回退到底层默认评分。"""
 
+        if not self.strategy_enable_score_hooks:
+            return None
         func_name = "score_phase1" if phase == "phase1" else "score_phase2"
         func = getattr(self.strategy_module, func_name, None)
         if func is None:
@@ -337,6 +409,117 @@ class StrategyScheduler(RelaxedRLScheduler):
         except Exception as exc:  # noqa: BLE001 - 策略异常不能中断固定内核
             print(f"[strategy-kernel] {func_name} failed: {exc}", file=sys.stderr, flush=True)
             return None
+
+    def selected_phase_pool(
+        self,
+        candidates: list[CandidateEval],
+        min_start: int,
+        phase: str,
+        default_window: int,
+    ) -> list[CandidateEval]:
+        """让策略模块重构候选池；失败时回退到固定窗口。
+
+        这是“算子自进化”的第一层：LLM 可以决定本阶段先比较哪些可行动作，
+        例如只保留已启动任务、扩大同族候选窗口、或筛掉明显低密度候选。所有
+        输入候选均已通过硬约束过滤，策略不能构造新动作。
+        """
+
+        default_pool = [item for item in candidates if item.start <= min_start + default_window]
+        if not self.operator_enable_hooks:
+            return default_pool
+        func_name = "select_phase1_candidates" if phase == "phase1" else "select_phase2_candidates"
+        func = getattr(self.strategy_module, func_name, None)
+        if func is None:
+            return default_pool
+        operator_window = (
+            self.operator_phase1_window if phase == "phase1" else self.operator_phase2_window
+        )
+        if operator_window is None:
+            operator_window = default_window
+        source_pool = [
+            item for item in candidates if item.start <= min_start + int(operator_window)
+        ]
+        if len(source_pool) > self.operator_max_candidates:
+            source_pool = sorted(
+                source_pool,
+                key=lambda item: (
+                    item.start,
+                    item.finish,
+                    -self.instance.tasks[item.task_id].weight,
+                    item.task_id,
+                ),
+            )[: self.operator_max_candidates]
+        try:
+            features = self.candidate_pool_features(source_pool, min_start, phase)
+            raw_indices = func(features, self.operator_context(source_pool, min_start, phase))
+        except Exception as exc:  # noqa: BLE001 - 策略异常不能中断固定内核
+            print(f"[strategy-kernel] {func_name} failed: {exc}", file=sys.stderr, flush=True)
+            return default_pool
+        if raw_indices is None:
+            return default_pool
+        if isinstance(raw_indices, dict):
+            raw_indices = raw_indices.get("indices")
+        if isinstance(raw_indices, (int, float)):
+            raw_indices = [raw_indices]
+        if not isinstance(raw_indices, (list, tuple)):
+            return default_pool
+        selected: list[CandidateEval] = []
+        seen: set[int] = set()
+        for raw_index in raw_indices:
+            try:
+                index = int(raw_index)
+            except (TypeError, ValueError):
+                continue
+            if index in seen or index < 0 or index >= len(source_pool):
+                continue
+            selected.append(source_pool[index])
+            seen.add(index)
+        return selected or default_pool
+
+    def strategy_chosen_candidate(
+        self,
+        candidates: list[CandidateEval],
+        min_start: int,
+        phase: str,
+    ) -> CandidateEval | None:
+        """让策略模块直接选择阶段动作；失败时由评分函数接管。"""
+
+        if not self.operator_enable_hooks:
+            return None
+        func_name = "choose_phase1_action" if phase == "phase1" else "choose_phase2_action"
+        func = getattr(self.strategy_module, func_name, None)
+        if func is None:
+            return None
+        try:
+            features = self.candidate_pool_features(candidates, min_start, phase)
+            raw_index = func(features, self.operator_context(candidates, min_start, phase))
+        except Exception as exc:  # noqa: BLE001 - 策略异常不能中断固定内核
+            print(f"[strategy-kernel] {func_name} failed: {exc}", file=sys.stderr, flush=True)
+            return None
+        if isinstance(raw_index, dict):
+            raw_index = raw_index.get("index")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            return None
+        if index < 0 or index >= len(candidates):
+            return None
+        return candidates[index]
+
+    def choose_from_pool(
+        self,
+        candidates: list[CandidateEval],
+        min_start: int,
+        phase: str,
+    ) -> CandidateEval:
+        """执行“算子选择优先，评分函数兜底”的动作选择。"""
+
+        chosen = self.strategy_chosen_candidate(candidates, min_start, phase)
+        if chosen is not None:
+            return chosen
+        if phase == "phase1":
+            return max(candidates, key=lambda item: self.score_candidate(item, min_start))
+        return max(candidates, key=lambda item: self.score_candidate_phase2(item, min_start))
 
     def score_candidate(self, eval_item: CandidateEval, min_start: int) -> tuple[float, int, int, str]:
         """第一阶段：用策略分数替代默认分数，但只作用于可行动作。"""
@@ -353,6 +536,39 @@ class StrategyScheduler(RelaxedRLScheduler):
         if score is None:
             return super().score_candidate_phase2(eval_item, min_start)
         return (score, -eval_item.start, -eval_item.finish, eval_item.task_id)
+
+    def score_batch_extra(self, anchor: CandidateEval, item: CandidateEval) -> float | None:
+        """策略可选地重排有限组批额外成员候选。"""
+
+        if not self.operator_enable_hooks:
+            return None
+        func = getattr(self.strategy_module, "score_batch_extra", None)
+        if func is None:
+            return None
+        min_start = min(anchor.start, item.start)
+        try:
+            return safe_float(
+                func(
+                    self.candidate_features(anchor, min_start, "batch_group"),
+                    self.candidate_features(item, min_start, "batch_group"),
+                    {
+                        "machine_id": anchor.machine_id,
+                        "batch_group_wait": self.batch_group_wait,
+                        "horizon": self.instance.horizon,
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - 策略异常不能中断固定内核
+            print(f"[strategy-kernel] score_batch_extra failed: {exc}", file=sys.stderr, flush=True)
+            return None
+
+    def batch_extra_sort_key(self, anchor: CandidateEval, item: CandidateEval) -> tuple[float, float, float, str]:
+        """有限组批成员扩展算子；策略不接管时回退到基础排序。"""
+
+        strategy_score = self.score_batch_extra(anchor, item)
+        if strategy_score is None:
+            return super().batch_extra_sort_key(anchor, item)
+        return (strategy_score, -item.start, -item.option_priority, item.task_id)
 
 
 def build_case_context(input_path: Path, track: str) -> dict[str, Any]:
@@ -511,6 +727,18 @@ def main() -> int:
             batch_group_wait=int(config["batch_group_wait"]),
             batch_group_mixed_time=bool(config["batch_group_mixed_time"]),
             batch_group_any_time=bool(config["batch_group_any_time"]),
+            operator_phase1_window=(
+                None
+                if config.get("operator_phase1_window") is None
+                else int(config["operator_phase1_window"])
+            ),
+            operator_phase2_window=(
+                None
+                if config.get("operator_phase2_window") is None
+                else int(config["operator_phase2_window"])
+            ),
+            operator_max_candidates=int(config.get("operator_max_candidates") or 512),
+            operator_enable_hooks=bool(config.get("operator_enable_hooks")),
             strategy_module=strategy,
         )
         task_records = scheduler.solve()

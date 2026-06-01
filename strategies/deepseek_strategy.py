@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 
+ENABLE_SCORE_HOOKS = False
+
+
 def describe_strategy() -> str:
     """返回策略说明，便于实验日志记录。"""
 
@@ -26,6 +29,7 @@ def get_config(base_config: dict, case_context: dict) -> dict:
             "batch_group_wait": 320,
             "batch_group_mixed_time": True,
             "batch_group_any_time": False,
+            "operator_enable_hooks": False,
             "score_zero_setup": 0.0,
             "phase2_zero_setup": 0.0,
         }
@@ -55,5 +59,35 @@ def score_phase1(features: dict) -> float:
 
 def score_phase2(features: dict) -> float:
     """第二阶段评分；默认回退到固定内核内置评分函数。"""
+
+    return None
+
+
+def select_phase1_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    """第一阶段候选池算子；默认不接管候选池。"""
+
+    return None
+
+
+def select_phase2_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    """第二阶段候选池算子；默认不接管候选池。"""
+
+    return None
+
+
+def choose_phase1_action(candidates: list[dict], context: dict) -> int | None:
+    """第一阶段动作选择算子；默认交给评分函数。"""
+
+    return None
+
+
+def choose_phase2_action(candidates: list[dict], context: dict) -> int | None:
+    """第二阶段动作选择算子；默认交给评分函数。"""
+
+    return None
+
+
+def score_batch_extra(anchor: dict, extra: dict, context: dict) -> float | None:
+    """有限组批额外成员排序算子；默认使用固定内核排序。"""
 
     return None

@@ -931,6 +931,20 @@ class RelaxedRLScheduler:
         )
         return candidate
 
+    def batch_extra_sort_key(self, anchor: CandidateEval, item: CandidateEval) -> tuple[float, float, float, str]:
+        """有限组批扩展候选的默认排序键。
+
+        子类可以覆盖该方法，引入更高层的组批成员选择算子；基础求解器保持
+        原有偏好：优先高权重、低候选优先级、较早可加入的同族任务。
+        """
+
+        return (
+            self.instance.tasks[item.task_id].weight,
+            -item.option_priority,
+            -item.start,
+            item.task_id,
+        )
+
     def batch_family(self, proc: ProcessSpec) -> tuple[str, ...]:
         return getattr(proc, "batch_family", ())
 
@@ -1051,15 +1065,7 @@ class RelaxedRLScheduler:
             for item in candidate_pool
             if item.task_id != best.task_id and item.machine_id == best.machine_id
         ]
-        extras.sort(
-            key=lambda item: (
-                self.instance.tasks[item.task_id].weight,
-                -item.option_priority,
-                -item.start,
-                item.task_id,
-            ),
-            reverse=True,
-        )
+        extras.sort(key=lambda item: self.batch_extra_sort_key(best, item), reverse=True)
         for item in extras:
             extra_task = self.instance.tasks[item.task_id]
             extra_proc = extra_task.processes[item.idx]
@@ -1196,6 +1202,29 @@ class RelaxedRLScheduler:
         score -= eval_item.option_priority * 10.0
         return (score, -eval_item.start, -eval_item.finish, eval_item.task_id)
 
+    def selected_phase_pool(
+        self,
+        candidates: list[CandidateEval],
+        min_start: int,
+        phase: str,
+        default_window: int,
+    ) -> list[CandidateEval]:
+        """返回阶段动作候选池；基础求解器使用固定时间窗口。"""
+
+        return [item for item in candidates if item.start <= min_start + default_window]
+
+    def choose_from_pool(
+        self,
+        candidates: list[CandidateEval],
+        min_start: int,
+        phase: str,
+    ) -> CandidateEval:
+        """从候选池中选择一个动作；基础求解器使用阶段评分函数。"""
+
+        if phase == "phase1":
+            return max(candidates, key=lambda item: self.score_candidate(item, min_start))
+        return max(candidates, key=lambda item: self.score_candidate_phase2(item, min_start))
+
     def rebuild_state_with_kept_tasks(self, kept_task_ids: set[str]) -> None:
         """保留一组已完整任务，并重建调度状态。"""
         kept_records = {
@@ -1322,10 +1351,10 @@ class RelaxedRLScheduler:
             # phase2 gate 保留“优先补齐已开工任务”的原始行为；
             # 只有实验显式允许时，未开工任务才会一起竞争。
             min_start = min(item.start for item in candidate_pool)
-            shortlist = [
-                item for item in candidate_pool if item.start <= min_start + max(self.lookahead, 360)
-            ]
-            best = max(shortlist, key=lambda item: self.score_candidate_phase2(item, min_start))
+            shortlist = self.selected_phase_pool(
+                candidate_pool, min_start, "phase2", max(self.lookahead, 360)
+            )
+            best = self.choose_from_pool(shortlist, min_start, "phase2")
             self.record_selected(best, candidate_pool)
             self.task_status[best.task_id] = "active"
             self.advance_batch_prefix(best.task_id, respect_horizon=False)
@@ -1428,10 +1457,10 @@ class RelaxedRLScheduler:
                 break
 
             min_start = min(item.start for item in feasible_candidates)
-            shortlist = [
-                item for item in feasible_candidates if item.start <= min_start + self.lookahead
-            ]
-            best = max(shortlist, key=lambda item: self.score_candidate(item, min_start))
+            shortlist = self.selected_phase_pool(
+                feasible_candidates, min_start, "phase1", self.lookahead
+            )
+            best = self.choose_from_pool(shortlist, min_start, "phase1")
             self.record_selected(best, feasible_candidates)
             self.task_status[best.task_id] = "active"
             self.advance_batch_prefix(best.task_id, respect_horizon=True)
@@ -1481,10 +1510,10 @@ class RelaxedRLScheduler:
             )
             # 第二阶段使用更宽候选窗口，降低长尾链路在修复阶段陷入局部死角的概率。
             min_start = min(item.start for item in candidate_pool)
-            shortlist = [
-                item for item in candidate_pool if item.start <= min_start + max(self.lookahead, 360)
-            ]
-            best = max(shortlist, key=lambda item: self.score_candidate_phase2(item, min_start))
+            shortlist = self.selected_phase_pool(
+                candidate_pool, min_start, "phase2", max(self.lookahead, 360)
+            )
+            best = self.choose_from_pool(shortlist, min_start, "phase2")
             self.record_selected(best, candidate_pool)
             self.task_status[best.task_id] = "active"
             self.advance_batch_prefix(best.task_id, respect_horizon=False)
