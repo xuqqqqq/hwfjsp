@@ -47,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=600)
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=20260602)
+    parser.add_argument(
+        "--target-setup",
+        type=int,
+        default=500,
+        help="训练和生成候选库时使用的目标正 setup 次数。",
+    )
     parser.add_argument("--reward-setup-penalty", type=float, default=0.2)
     parser.add_argument("--reward-error-penalty", type=float, default=5000.0)
     parser.add_argument("--reward-time-penalty", type=float, default=0.02)
@@ -99,6 +105,7 @@ def collect_examples(
     setup_penalty: float,
     error_penalty: float,
     time_penalty: float,
+    target_setup: int,
 ) -> list[dict[str, Any]]:
     """从状态文件和历史报告中收集训练样本。"""
 
@@ -112,14 +119,16 @@ def collect_examples(
         candidate_id = recommendation.get("candidate_id")
         if not isinstance(features, dict) or not candidate_id:
             continue
-        reward_details = report.get("reward_details")
+        features = dict(features)
+        features.setdefault("target_setup", target_setup)
+        reward_details = recommender.reward_from_report(
+            report,
+            setup_penalty=setup_penalty,
+            error_penalty=error_penalty,
+            time_penalty=time_penalty,
+        )
         if not reward_details:
-            reward_details = recommender.reward_from_report(
-                report,
-                setup_penalty=setup_penalty,
-                error_penalty=error_penalty,
-                time_penalty=time_penalty,
-            )
+            reward_details = report.get("reward_details")
         if not reward_details:
             continue
         examples.append(
@@ -189,12 +198,19 @@ def main() -> int:
         setup_penalty=args.reward_setup_penalty,
         error_penalty=args.reward_error_penalty,
         time_penalty=args.reward_time_penalty,
+        target_setup=args.target_setup,
     )
     if not examples:
         raise SystemExit("no training examples found")
 
     first_features = examples[0]["features"]
-    candidates = recommender.candidate_policy_library(first_features, args.track, target_setup=600)
+    first_features = dict(first_features)
+    first_features.setdefault("target_setup", args.target_setup)
+    candidates = recommender.candidate_policy_library(
+        first_features,
+        args.track,
+        target_setup=args.target_setup,
+    )
     candidate_ids = [candidate["candidate_id"] for candidate in candidates]
     candidate_index = {candidate_id: index for index, candidate_id in enumerate(candidate_ids)}
     examples = [item for item in examples if item["candidate_id"] in candidate_index]
@@ -229,7 +245,7 @@ def main() -> int:
             if arm.get("count"):
                 prior_reward = float(arm.get("reward_mean", candidate.get("candidate_prior_reward", reward_center)))
             else:
-                prior_reward = float(candidate.get("candidate_prior_reward", reward_center))
+                prior_reward = reward_center
             prior_scores.append((prior_reward - reward_center) / reward_scale)
         model.fc2.bias.copy_(torch.tensor(prior_scores, dtype=torch.float32))
 

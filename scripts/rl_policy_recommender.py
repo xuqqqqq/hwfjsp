@@ -445,6 +445,10 @@ def candidate_from(
     updates: dict[str, Any],
     reasons: list[str],
     prior_reward: float,
+    score_hook_template: str = "",
+    added_rules: list[str] | None = None,
+    removed_rules: list[str] | None = None,
+    kept_rules: list[str] | None = None,
 ) -> dict[str, Any]:
     """基于安全模板生成一个候选参数臂。"""
 
@@ -465,6 +469,10 @@ def candidate_from(
     recommendation["candidate_prior_reward"] = prior_reward
     recommendation["config"] = config
     recommendation["reasons"] = [*base["reasons"], *reasons]
+    recommendation["score_hook_template"] = score_hook_template
+    recommendation["added_rules"] = added_rules or []
+    recommendation["removed_rules"] = removed_rules or []
+    recommendation["kept_rules"] = kept_rules or []
     recommendation["feature_signals"] = dict(base.get("feature_signals", {}))
     recommendation["feature_signals"]["candidate_id"] = candidate_id
     return recommendation
@@ -596,11 +604,335 @@ def candidate_policy_library(features: dict[str, Any], track: str, target_setup:
             reasons=["当用户明确追求低 setup 时保留强约束模板，但由 bandit 决定是否值得尝试。"],
             prior_reward=18050.0,
         ),
+        candidate_from(
+            base,
+            candidate_id="historical_lowsetup_524",
+            label="历史低切换模板",
+            updates={
+                "lookahead": 85,
+                "start_guard": 120,
+                "score_density": 22000.0,
+                "phase2_density": 6600.0,
+                "score_family": 680.0,
+                "phase2_family": 780.0,
+                "score_setup_fixed": 480.0,
+                "phase2_setup_fixed": 580.0,
+                "batch_group_wait": 320 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+            },
+            reasons=["复用历史自动搜索中达到约 18226/524 的低切换参数形态。"],
+            prior_reward=18120.0,
+        ),
+        candidate_from(
+            base,
+            candidate_id="historical_lowsetup_rulehook_524",
+            label="历史低切换规则模板",
+            updates={
+                "lookahead": 85,
+                "start_guard": 120,
+                "score_density": 22000.0,
+                "phase2_density": 6600.0,
+                "score_family": 680.0,
+                "phase2_family": 780.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 480.0,
+                "phase2_zero_setup": 380.0,
+                "score_setup_fixed": 480.0,
+                "phase2_setup_fixed": 580.0,
+                "score_setup_per": 4.0,
+                "phase2_setup_per": 4.5,
+                "batch_group_wait": 320 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 72.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 400.0,
+                "phase2_upper_bound_bonus": 200.0,
+                "phase2_batch_bonus": 150.0,
+            },
+            reasons=["同时复用历史低切换参数与评分钩子，验证低 setup 收益来自规则而不只是参数。"],
+            prior_reward=18280.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "score_phase1 增加机器负载均衡惩罚：upper_bound 超过剩余时间 2.0 倍时扣 500。",
+                "score_path 使用密度、候选机器数、等待时间、路径时长和组批工序数联合评分。",
+            ],
+            removed_rules=[
+                "score_phase1 不再额外加入组批潜力奖励，避免与有限组批内核重复激励。",
+            ],
+            kept_rules=[
+                "score_phase1 保留密度、同族连续、零 setup、setup 时间惩罚。",
+                "score_phase2 保留已启动任务、同族连续、零 setup、密度、紧迫度、上界保护、进度和组批轻奖励。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="lowsetup_rulehook_density_push",
+            label="低切换密度推进模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+            },
+            reasons=["在 18226/524 低切换规则上提高密度与紧迫保护，尝试补回 18500 附近产量。"],
+            prior_reward=18350.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "沿用低切换 score_path 与 phase1 负载均衡惩罚。",
+                "phase2 提高密度权重并保留较强 setup 抑制。",
+            ],
+            removed_rules=[
+                "继续不使用 phase1 组批潜力额外奖励。",
+            ],
+            kept_rules=[
+                "保留低切换规则模板的路径评分、同族连续、零 setup 与紧迫保护。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="lowsetup_rulehook_density_push_v2",
+            label="低切换密度推进模板v2",
+            updates={
+                "lookahead": 95,
+                "start_guard": 120,
+                "score_density": 22600.0,
+                "phase2_density": 6800.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 280 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 78.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 160.0,
+            },
+            reasons=["在 18484/498 基础上只做小幅密度推进，目标补足 18500 同时守住 500 setup。"],
+            prior_reward=18400.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "沿用低切换 score_path 与 phase1 负载均衡惩罚。",
+                "phase2 小幅提高密度和组批轻奖励，尝试补足临界产量。",
+            ],
+            removed_rules=[
+                "继续不使用 phase1 组批潜力额外奖励。",
+            ],
+            kept_rules=[
+                "保留低切换规则模板的路径评分、同族连续、零 setup 与紧迫保护。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="lowsetup_rulehook_density_push_v1b",
+            label="低切换密度推进模板v1b",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22520.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 77.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 145.0,
+            },
+            reasons=["保留 18484/498 的结构，仅微调密度和组批轻奖励，避免 v2 的候选窗口扰动。"],
+            prior_reward=18405.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "沿用低切换 score_path 与 phase1 负载均衡惩罚。",
+                "phase2 仅做极小幅密度推进，保持 v1 的候选窗口和组批等待。",
+            ],
+            removed_rules=[
+                "继续不使用 phase1 组批潜力额外奖励。",
+            ],
+            kept_rules=[
+                "保留低切换规则模板的路径评分、同族连续、零 setup 与紧迫保护。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="historical_bridge_588",
+            label="历史桥接模板",
+            updates={
+                "lookahead": 85,
+                "start_guard": 120,
+                "score_density": 22300.0,
+                "phase2_density": 6750.0,
+                "score_family": 680.0,
+                "phase2_family": 780.0,
+                "score_setup_fixed": 480.0,
+                "phase2_setup_fixed": 580.0,
+                "batch_group_wait": 320 if finite else 0,
+            },
+            reasons=["复用历史自动搜索中达到约 18566/588 的产量-切换桥接形态。"],
+            prior_reward=18440.0,
+        ),
+        candidate_from(
+            base,
+            candidate_id="historical_completion_rule_588",
+            label="历史补全规则模板",
+            updates={
+                "lookahead": 85,
+                "start_guard": 120,
+                "score_density": 22300.0,
+                "phase2_density": 6750.0,
+                "score_family": 680.0,
+                "phase2_family": 780.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 480.0,
+                "phase2_zero_setup": 380.0,
+                "score_setup_fixed": 480.0,
+                "phase2_setup_fixed": 580.0,
+                "score_setup_per": 4.0,
+                "phase2_setup_per": 4.0,
+                "batch_group_wait": 320 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 74.0,
+                "phase2_hook_setup_per": 4.0,
+                "phase2_urgency_threshold": 0.55,
+                "phase2_urgency_bonus": 300.0,
+                "phase2_upper_bound_bonus": 200.0,
+                "phase2_batch_bonus": 200.0,
+            },
+            reasons=["复用历史 new_completion_rule_v2：只改二阶段密度-效率平衡，保留默认路径和一阶段。"],
+            prior_reward=18480.0,
+            score_hook_template="completion_efficiency",
+            added_rules=[
+                "score_phase2 增加密度-效率平衡：density * 74 - setup_time * 4。",
+            ],
+            removed_rules=[
+                "score_phase2 删除额外进度奖励，避免与固定内核默认进度处理重复。",
+            ],
+            kept_rules=[
+                "score_path 和 score_phase1 回退固定内核默认评分。",
+                "score_phase2 保留已启动任务、同族连续、零 setup、紧迫度、上界保护和组批轻奖励。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="completion_rule_setup_guard",
+            label="补全低切换守护模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22200.0,
+                "phase2_density": 6600.0,
+                "score_family": 720.0,
+                "phase2_family": 860.0,
+                "score_progress": 120.0,
+                "phase2_progress": 40.0,
+                "score_zero_setup": 520.0,
+                "phase2_zero_setup": 520.0,
+                "score_setup_fixed": 520.0,
+                "phase2_setup_fixed": 680.0,
+                "score_setup_per": 4.5,
+                "phase2_setup_per": 4.8,
+                "batch_group_wait": 360 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 70.0,
+                "phase2_hook_setup_per": 5.2,
+                "phase2_urgency_threshold": 0.60,
+                "phase2_urgency_bonus": 340.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 150.0,
+            },
+            reasons=["在 185xx/588 补全规则上增强 setup 抑制和同族连续，尝试向 550 以下移动。"],
+            prior_reward=18380.0,
+            score_hook_template="completion_efficiency",
+            added_rules=[
+                "沿用 score_phase2 密度-效率平衡，但提高 setup 惩罚系数。",
+            ],
+            removed_rules=[
+                "削弱二阶段进度激励和组批奖励，减少为抢尾部任务产生的切换。",
+            ],
+            kept_rules=[
+                "score_path 和 score_phase1 回退固定内核默认评分。",
+                "score_phase2 保留已启动任务、同族连续、零 setup、紧迫度和上界保护。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="historical_high_647",
+            label="历史高产模板",
+            updates={
+                "lookahead": 85,
+                "start_guard": 120,
+                "score_density": 23000.0,
+                "phase2_density": 6700.0,
+                "score_family": 500.0,
+                "phase2_family": 630.0,
+                "score_setup_fixed": 410.0,
+                "phase2_setup_fixed": 510.0,
+                "batch_group_wait": 320 if finite else 0,
+            },
+            reasons=["复用历史自动搜索中达到约 18686/647 的高产量稳定形态。"],
+            prior_reward=18480.0,
+        ),
+        candidate_from(
+            base,
+            candidate_id="bridge_lowsetup_target",
+            label="低切换桥接模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 110,
+                "score_density": 22200.0,
+                "phase2_density": 6650.0,
+                "score_family": 760.0,
+                "phase2_family": 880.0,
+                "score_setup_fixed": 540.0,
+                "phase2_setup_fixed": 660.0,
+                "batch_group_wait": 360 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+            },
+            reasons=["在历史 185xx/588 和 182xx/524 之间插值，专门探索 18500/500 附近区域。"],
+            prior_reward=18320.0,
+        ),
     ]
     return candidates
 
 
 FEATURE_VECTOR_KEYS = [
+    "target_setup",
     "task_count",
     "machine_count",
     "factory_count",
@@ -622,6 +954,7 @@ FEATURE_VECTOR_KEYS = [
 ]
 
 FEATURE_SCALES = {
+    "target_setup": 1000.0,
     "task_count": 2000.0,
     "machine_count": 100.0,
     "factory_count": 5.0,
@@ -1172,63 +1505,10 @@ def recommend_policy(
     )
 
 
-def strategy_source(recommendation: dict[str, Any]) -> str:
-    """把推荐结果写成 strategy_kernel_solver 可加载的策略模块。"""
+def default_hook_source() -> str:
+    """生成不接管评分/动作的默认策略钩子代码。"""
 
-    config_literal = repr(recommendation["config"])
-    policy_name = recommendation["policy_name"]
-    reasons = recommendation["reasons"]
-    candidate_id = recommendation.get("candidate_id")
-    policy_mode = recommendation.get("policy_mode")
-    selection_info = recommendation.get("selection_info", {})
-    return f'''"""自动生成的算例级推荐策略。
-
-该文件由 scripts/rl_policy_recommender.py 生成。策略只覆盖参数，
-不直接接管动作选择；硬约束仍由固定内核和校验器负责。
-"""
-from __future__ import annotations
-
-
-ENABLE_SCORE_HOOKS = False
-CONFIG = {config_literal}
-REASONS = {reasons!r}
-
-
-def describe_strategy() -> str:
-    return {policy_name!r}
-
-
-def describe_rule_changes() -> dict:
-    return {{
-        "added_rules": [],
-        "removed_rules": [],
-        "kept_rules": [
-            "固定内核默认路径选择",
-            "固定内核第一阶段产量优先评分",
-            "固定内核第二阶段完整补齐评分",
-            "有限组批仅使用 same-family 安全组批模板",
-        ],
-        "changed_parameters": CONFIG,
-        "candidate_id": {candidate_id!r},
-        "policy_mode": {policy_mode!r},
-        "selection_info": {selection_info!r},
-        "rule_suggestions": [
-            "后续训练模型可在该安全参数基础上选择小范围变异",
-            "若需要深度强化学习，应只在内核可行动作 top-K 中做 masked action",
-        ],
-        "no_rule_change_reason": "首版推荐器优先保证稳定性，只推荐参数和安全规则模板。",
-        "expected_effect": "输出完整合法解，并作为后续监督学习/RL 的安全基线。",
-        "risk": "该策略不会使用任务级 bonus，可能低于人工长期调优后的局部最优。",
-        "reasons": REASONS,
-    }}
-
-
-def get_config(base_config: dict, case_context: dict) -> dict:
-    config = dict(base_config)
-    config.update(CONFIG)
-    return config
-
-
+    return '''
 def score_path(features: dict) -> float | None:
     return None
 
@@ -1259,6 +1539,251 @@ def choose_phase2_action(candidates: list[dict], context: dict) -> int | None:
 
 def score_batch_extra(anchor: dict, extra: dict, context: dict) -> float | None:
     return None
+'''
+
+
+def lowsetup_load_balance_hook_source() -> str:
+    """生成历史低切换候选对应的安全评分钩子代码。"""
+
+    return '''
+def score_path(features: dict) -> float | None:
+    task_weight = float(features.get("task_weight", 0.0) or 0.0)
+    task_priority = float(features.get("task_priority", 1.0) or 1.0)
+    nonbatch_time = max(float(features.get("nonbatch_time", 1.0) or 1.0), 1.0)
+    batch_count = float(features.get("batch_count", 0.0) or 0.0)
+    machine_count = float(features.get("machine_count", 1.0) or 1.0)
+    min_wait = float(features.get("min_wait", 0.0) or 0.0)
+    avg_option_count = float(features.get("avg_option_count", 1.0) or 1.0)
+    estimated_path_time = float(features.get("estimated_path_time", 1.0) or 1.0)
+
+    density = task_weight / nonbatch_time
+    score = density * 30.0
+    score += machine_count * 10.0
+    score -= min_wait * 0.5
+    score += (1.0 / (task_priority + 0.1)) * 20.0
+    score -= estimated_path_time * 0.1
+    score += avg_option_count * 5.0
+    score += batch_count * 30.0
+    return score
+
+
+def score_phase1(features: dict) -> float | None:
+    task_weight = float(features.get("task_weight", 0.0) or 0.0)
+    remaining_nonbatch_time = max(float(features.get("remaining_nonbatch_time", 1.0) or 1.0), 1.0)
+    setup_time = float(features.get("setup_time", 0.0) or 0.0)
+    upper_bound = float(features.get("upper_bound", float("inf")))
+    horizon = float(features.get("horizon", 24480.0) or 24480.0)
+    current_time = float(features.get("current_time", 0.0) or 0.0)
+
+    score = task_weight / remaining_nonbatch_time * float(CONFIG.get("score_density", 22000.0))
+    if features.get("same_family", False):
+        score += float(CONFIG.get("score_family", 680.0))
+    if features.get("zero_setup", False):
+        score += float(CONFIG.get("score_zero_setup", 480.0))
+    if setup_time > 0:
+        score -= setup_time * float(CONFIG.get("score_setup_per", 4.0))
+
+    remaining_time = horizon - current_time
+    if remaining_time > 0 and upper_bound < float("inf") and upper_bound > remaining_time * 2.0:
+        score -= 500.0
+    return score
+
+
+def score_phase2(features: dict) -> float | None:
+    task_weight = float(features.get("task_weight", 0.0) or 0.0)
+    remaining_nonbatch_time = max(float(features.get("remaining_nonbatch_time", 1.0) or 1.0), 1.0)
+    setup_time = float(features.get("setup_time", 0.0) or 0.0)
+    upper_bound = float(features.get("upper_bound", float("inf")))
+    horizon = float(features.get("horizon", 24480.0) or 24480.0)
+    current_time = float(features.get("current_time", 0.0) or 0.0)
+
+    score = 0.0
+    if features.get("started", False):
+        score += float(CONFIG.get("phase2_started", 2200.0))
+    if features.get("same_family", False):
+        score += float(CONFIG.get("phase2_family", 780.0))
+    if features.get("zero_setup", False):
+        score += float(CONFIG.get("phase2_zero_setup", 380.0))
+
+    density = task_weight / remaining_nonbatch_time
+    score += density * float(CONFIG.get("phase2_hook_density", 72.0))
+    if setup_time > 0:
+        score -= setup_time * float(CONFIG.get("phase2_setup_per", 4.5))
+
+    if upper_bound < float("inf"):
+        urgency_ratio = (horizon - current_time) / (upper_bound - current_time + 1.0)
+        if urgency_ratio > float(CONFIG.get("phase2_urgency_threshold", 0.65)):
+            score += float(CONFIG.get("phase2_urgency_bonus", 400.0))
+        if upper_bound < 700:
+            score += float(CONFIG.get("phase2_upper_bound_bonus", 200.0))
+
+    progress = task_weight / (remaining_nonbatch_time + 1.0)
+    score += progress * 200.0
+    if features.get("is_batch", False):
+        score += float(CONFIG.get("phase2_batch_bonus", 150.0))
+    return score
+
+
+def select_phase1_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    return None
+
+
+def select_phase2_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    return None
+
+
+def choose_phase1_action(candidates: list[dict], context: dict) -> int | None:
+    return None
+
+
+def choose_phase2_action(candidates: list[dict], context: dict) -> int | None:
+    return None
+
+
+def score_batch_extra(anchor: dict, extra: dict, context: dict) -> float | None:
+    return None
+'''
+
+
+def completion_efficiency_hook_source() -> str:
+    """生成历史补全规则候选对应的安全评分钩子代码。"""
+
+    return '''
+def score_path(features: dict) -> float | None:
+    return None
+
+
+def score_phase1(features: dict) -> float | None:
+    return None
+
+
+def score_phase2(features: dict) -> float | None:
+    task_weight = float(features.get("task_weight", 0.0) or 0.0)
+    remaining_nonbatch_time = max(float(features.get("remaining_nonbatch_time", 1.0) or 1.0), 1.0)
+    setup_time = float(features.get("setup_time", 0.0) or 0.0)
+    upper_bound = float(features.get("upper_bound", float("inf")))
+    horizon = float(features.get("horizon", 24480.0) or 24480.0)
+    current_time = float(features.get("current_time", 0.0) or 0.0)
+
+    score = 0.0
+    if features.get("started", False):
+        score += float(CONFIG.get("phase2_started", 2200.0))
+    if features.get("same_family", False):
+        score += float(CONFIG.get("phase2_family", 780.0))
+    if features.get("zero_setup", False):
+        score += float(CONFIG.get("phase2_zero_setup", 380.0))
+
+    density = task_weight / remaining_nonbatch_time
+    score += density * float(CONFIG.get("phase2_hook_density", 74.0))
+    score -= setup_time * float(CONFIG.get("phase2_hook_setup_per", 4.0))
+
+    if upper_bound < float("inf"):
+        urgency_ratio = (horizon - current_time) / (upper_bound - current_time + 1.0)
+        if urgency_ratio > float(CONFIG.get("phase2_urgency_threshold", 0.55)):
+            score += float(CONFIG.get("phase2_urgency_bonus", 300.0))
+        if upper_bound < 700:
+            score += float(CONFIG.get("phase2_upper_bound_bonus", 200.0))
+
+    if float(features.get("estimated_final", horizon) or horizon) < horizon:
+        score += float(CONFIG.get("phase2_batch_bonus", 200.0))
+    return score
+
+
+def select_phase1_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    return None
+
+
+def select_phase2_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    return None
+
+
+def choose_phase1_action(candidates: list[dict], context: dict) -> int | None:
+    return None
+
+
+def choose_phase2_action(candidates: list[dict], context: dict) -> int | None:
+    return None
+
+
+def score_batch_extra(anchor: dict, extra: dict, context: dict) -> float | None:
+    return None
+'''
+
+
+def strategy_hook_source(score_hook_template: str) -> str:
+    """根据候选模板名生成可审计的策略钩子代码。"""
+
+    if score_hook_template == "lowsetup_load_balance":
+        return lowsetup_load_balance_hook_source()
+    if score_hook_template == "completion_efficiency":
+        return completion_efficiency_hook_source()
+    return default_hook_source()
+
+
+def strategy_source(recommendation: dict[str, Any]) -> str:
+    """把推荐结果写成 strategy_kernel_solver 可加载的策略模块。"""
+
+    config_literal = repr(recommendation["config"])
+    policy_name = recommendation["policy_name"]
+    reasons = recommendation["reasons"]
+    candidate_id = recommendation.get("candidate_id")
+    policy_mode = recommendation.get("policy_mode")
+    selection_info = recommendation.get("selection_info", {})
+    score_hook_template = str(recommendation.get("score_hook_template") or "")
+    enable_score_hooks = bool(score_hook_template)
+    added_rules = recommendation.get("added_rules") or []
+    removed_rules = recommendation.get("removed_rules") or []
+    kept_rules = recommendation.get("kept_rules") or [
+        "固定内核默认路径选择",
+        "固定内核第一阶段产量优先评分",
+        "固定内核第二阶段完整补齐评分",
+        "有限组批仅使用 same-family 安全组批模板",
+    ]
+    hook_source = strategy_hook_source(score_hook_template)
+    return f'''"""自动生成的算例级推荐策略。
+
+该文件由 scripts/rl_policy_recommender.py 生成。策略只在安全模板内覆盖参数
+和可审计评分钩子；硬约束仍由固定内核和校验器负责。
+"""
+from __future__ import annotations
+
+
+ENABLE_SCORE_HOOKS = {enable_score_hooks!r}
+CONFIG = {config_literal}
+REASONS = {reasons!r}
+
+
+def describe_strategy() -> str:
+    return {policy_name!r}
+
+
+def describe_rule_changes() -> dict:
+    return {{
+        "added_rules": {added_rules!r},
+        "removed_rules": {removed_rules!r},
+        "kept_rules": {kept_rules!r},
+        "changed_parameters": CONFIG,
+        "candidate_id": {candidate_id!r},
+        "policy_mode": {policy_mode!r},
+        "selection_info": {selection_info!r},
+        "score_hook_template": {score_hook_template!r},
+        "rule_suggestions": [
+            "后续训练模型可在该安全参数基础上选择小范围变异",
+            "若需要深度强化学习，应只在内核可行动作 top-K 中做 masked action",
+        ],
+        "no_rule_change_reason": {"" if enable_score_hooks else "首版推荐器优先保证稳定性，只推荐参数和安全规则模板。"!r},
+        "expected_effect": "输出完整合法解，并作为后续监督学习/RL 的安全基线。",
+        "risk": "该策略不会使用任务级 bonus，可能低于人工长期调优后的局部最优。",
+        "reasons": REASONS,
+    }}
+
+
+def get_config(base_config: dict, case_context: dict) -> dict:
+    config = dict(base_config)
+    config.update(CONFIG)
+    return config
+
+{hook_source}
 '''
 
 
@@ -1450,6 +1975,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     features = extract_case_features(input_path)
+    features["target_setup"] = args.target_setup
     policy_state = load_policy_state(policy_state_path)
     experiences = load_experiences(policy_state, experience_sources)
     seed_material = f"{args.seed}:{input_path}:{args.track}:{len(policy_state.get('experiences', []))}"
