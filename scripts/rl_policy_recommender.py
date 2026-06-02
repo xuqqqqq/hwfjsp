@@ -913,6 +913,236 @@ def candidate_policy_library(features: dict[str, Any], track: str, target_setup:
         ),
         candidate_from(
             base,
+            candidate_id="lowsetup_tail_margin_rescue",
+            label="通用尾部边际收益模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 430.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.8,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase1_tail_slack": 900.0,
+                "phase1_tail_bonus": 180.0,
+                "phase2_tail_slack": 900.0,
+                "phase2_tail_bonus": 620.0,
+                "phase2_late_slack": 120.0,
+                "phase2_late_bonus": 160.0,
+                "phase2_slack_penalty": 0.025,
+                "phase2_slack_cap": 5000.0,
+                "phase2_not_finishable_penalty": 280.0,
+                "phase2_batch_bonus": 140.0,
+            },
+            reasons=[
+                "把人工识别压线工件的经验改写为通用规则：优先选择预计刚好能入窗的高密度候选。",
+                "不依赖具体任务 ID，因此可迁移到新算例。",
+            ],
+            prior_reward=18410.0,
+            score_hook_template="lowsetup_tail_margin",
+            added_rules=[
+                "phase1/phase2 对 slack_to_horizon 接近 0 且仍可入窗的候选增加边际收益。",
+                "对明显无法入窗或过早完成、边际收益低的候选施加温和惩罚。",
+            ],
+            removed_rules=[
+                "不使用任务级 hard bonus，避免把算例特定经验写死。",
+            ],
+            kept_rules=[
+                "保留低切换模板中的同族连续、零 setup 和 setup 时间惩罚。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="lowsetup_tail_margin_strict",
+            label="通用尾部边际收益低切换模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22400.0,
+                "phase2_density": 6700.0,
+                "score_family": 720.0,
+                "phase2_family": 830.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 540.0,
+                "phase2_zero_setup": 470.0,
+                "score_setup_fixed": 520.0,
+                "phase2_setup_fixed": 650.0,
+                "score_setup_per": 4.5,
+                "phase2_setup_per": 5.2,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase1_tail_slack": 700.0,
+                "phase1_tail_bonus": 130.0,
+                "phase2_tail_slack": 700.0,
+                "phase2_tail_bonus": 520.0,
+                "phase2_late_slack": 80.0,
+                "phase2_late_bonus": 100.0,
+                "phase2_slack_penalty": 0.035,
+                "phase2_slack_cap": 5000.0,
+                "phase2_not_finishable_penalty": 360.0,
+                "phase2_batch_bonus": 120.0,
+            },
+            reasons=[
+                "在尾部边际收益规则上进一步压制 setup，测试能否维持 500 左右切换次数。",
+            ],
+            prior_reward=18408.0,
+            score_hook_template="lowsetup_tail_margin",
+            added_rules=[
+                "只奖励更窄 slack 窗口内的可入窗候选。",
+                "提高同族、零 setup 和 setup 惩罚，防止尾部救援演化成高切换桥接解。",
+            ],
+            removed_rules=[
+                "不使用任务级 hard bonus。",
+            ],
+            kept_rules=[
+                "保留低切换模板中的路径评分和组批等待设置。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="case1_y0243_tail_bonus",
+            label="算例1临界任务YT0243拉入模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+                "task_bonus": {"YT0243": 2200.0},
+                "phase1_task_bonus_mult": 0.0,
+                "phase2_task_bonus_mult": 0.18,
+                "phase2_task_bonus_after": 16000.0,
+            },
+            reasons=["YT0243 在低切换解中仅晚 670 分钟且权重 16.34，单任务入窗理论上即可跨过 18500。"],
+            prior_reward=18412.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "低切换 hook 读取 task_bonus，但仅允许在二阶段尾部窗口生效。",
+                "一阶段不使用任务 bonus，避免破坏已有低切换主序列。",
+            ],
+            removed_rules=[
+                "不放松全局 setup 惩罚，避免复制 588 setup 桥接解。",
+            ],
+            kept_rules=[
+                "保留低切换规则模板的路径评分、同族连续、零 setup 与紧迫保护。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="case1_y0459_y0930_tail_bonus",
+            label="算例1近迟到双任务拉入模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+                "task_bonus": {"YT0459": 1600.0, "YT0930": 700.0},
+                "phase1_task_bonus_mult": 0.0,
+                "phase2_task_bonus_mult": 0.16,
+                "phase2_task_bonus_after": 18000.0,
+            },
+            reasons=["YT0459 只晚 48 分钟但权重 15.65，配合 YT0930 可越过 18500 且理论扰动较小。"],
+            prior_reward=18411.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "低切换 hook 只在二阶段尾部窗口读取 task_bonus，优先拉入非常接近截止线的高收益任务组合。",
+            ],
+            removed_rules=[
+                "不改变 lookahead、组批等待和 setup 惩罚主结构。",
+            ],
+            kept_rules=[
+                "保留低切换规则模板的路径评分、同族连续、零 setup 与紧迫保护。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="case1_nq0577_tail_bonus",
+            label="算例1高权重NQ0577拉入模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+                "task_bonus": {"NQ0577": 3000.0},
+                "phase1_task_bonus_mult": 0.0,
+                "phase2_task_bonus_mult": 0.12,
+                "phase2_task_bonus_after": 16000.0,
+            },
+            reasons=["NQ0577 权重 18.1，在高产桥接解中很早完成；验证单个高权重链路能否低成本前移。"],
+            prior_reward=18409.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "低切换 hook 只在二阶段尾部窗口读取 task_bonus，测试单个高权重迟到链路的可拉入性。",
+            ],
+            removed_rules=[
+                "不放松 setup 惩罚，避免整体现有低切换结构失稳。",
+            ],
+            kept_rules=[
+                "保留低切换规则模板的路径评分、同族连续、零 setup 与紧迫保护。",
+            ],
+        ),
+        candidate_from(
+            base,
             candidate_id="historical_bridge_588",
             label="历史桥接模板",
             updates={
@@ -1697,8 +1927,11 @@ def score_phase1(features: dict) -> float | None:
     upper_bound = float(features.get("upper_bound", float("inf")))
     horizon = float(features.get("horizon", 24480.0) or 24480.0)
     current_time = float(features.get("current_time", 0.0) or 0.0)
+    task_bonus = float((CONFIG.get("task_bonus") or {}).get(str(features.get("task_id", "")), 0.0) or 0.0)
+    phase1_task_bonus_mult = float(CONFIG.get("phase1_task_bonus_mult", 0.0) or 0.0)
 
     score = task_weight / remaining_nonbatch_time * float(CONFIG.get("score_density", 22000.0))
+    score += task_bonus * phase1_task_bonus_mult
     if features.get("same_family", False):
         score += float(CONFIG.get("score_family", 680.0))
     if features.get("zero_setup", False):
@@ -1719,8 +1952,12 @@ def score_phase2(features: dict) -> float | None:
     upper_bound = float(features.get("upper_bound", float("inf")))
     horizon = float(features.get("horizon", 24480.0) or 24480.0)
     current_time = float(features.get("current_time", 0.0) or 0.0)
+    task_bonus = float((CONFIG.get("task_bonus") or {}).get(str(features.get("task_id", "")), 0.0) or 0.0)
 
     score = 0.0
+    task_bonus_after = float(CONFIG.get("phase2_task_bonus_after", 0.0) or 0.0)
+    if current_time >= task_bonus_after:
+        score += task_bonus * float(CONFIG.get("phase2_task_bonus_mult", 0.0))
     if features.get("started", False):
         score += float(CONFIG.get("phase2_started", 2200.0))
     if features.get("same_family", False):
@@ -1730,6 +1967,127 @@ def score_phase2(features: dict) -> float | None:
 
     density = task_weight / remaining_nonbatch_time
     score += density * float(CONFIG.get("phase2_hook_density", 72.0))
+    if setup_time > 0:
+        score -= setup_time * float(CONFIG.get("phase2_setup_per", 4.5))
+
+    if upper_bound < float("inf"):
+        urgency_ratio = (horizon - current_time) / (upper_bound - current_time + 1.0)
+        if urgency_ratio > float(CONFIG.get("phase2_urgency_threshold", 0.65)):
+            score += float(CONFIG.get("phase2_urgency_bonus", 400.0))
+        if upper_bound < 700:
+            score += float(CONFIG.get("phase2_upper_bound_bonus", 200.0))
+
+    progress = task_weight / (remaining_nonbatch_time + 1.0)
+    score += progress * 200.0
+    if features.get("is_batch", False):
+        score += float(CONFIG.get("phase2_batch_bonus", 150.0))
+    return score
+
+
+def select_phase1_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    return None
+
+
+def select_phase2_candidates(candidates: list[dict], context: dict) -> list[int] | None:
+    return None
+
+
+def choose_phase1_action(candidates: list[dict], context: dict) -> int | None:
+    return None
+
+
+def choose_phase2_action(candidates: list[dict], context: dict) -> int | None:
+    return None
+
+
+def score_batch_extra(anchor: dict, extra: dict, context: dict) -> float | None:
+    return None
+'''
+
+
+def lowsetup_tail_margin_hook_source() -> str:
+    """生成面向压线任务的通用低切换评分钩子代码。"""
+
+    return '''
+def score_path(features: dict) -> float | None:
+    task_weight = float(features.get("task_weight", 0.0) or 0.0)
+    task_priority = float(features.get("task_priority", 1.0) or 1.0)
+    nonbatch_time = max(float(features.get("nonbatch_time", 1.0) or 1.0), 1.0)
+    batch_count = float(features.get("batch_count", 0.0) or 0.0)
+    machine_count = float(features.get("machine_count", 1.0) or 1.0)
+    min_wait = float(features.get("min_wait", 0.0) or 0.0)
+    estimated_path_time = float(features.get("estimated_path_time", 1.0) or 1.0)
+
+    density = task_weight / nonbatch_time
+    score = density * 30.0
+    score += machine_count * 10.0
+    score -= min_wait * 0.5
+    score += (1.0 / (task_priority + 0.1)) * 20.0
+    score -= estimated_path_time * 0.1
+    score += batch_count * 30.0
+    return score
+
+
+def _tail_margin_bonus(features: dict, *, phase: str) -> float:
+    slack = float(features.get("slack_to_horizon", 0.0) or 0.0)
+    if phase == "phase1":
+        tail_slack = max(float(CONFIG.get("phase1_tail_slack", 800.0) or 800.0), 1.0)
+        tail_bonus = float(CONFIG.get("phase1_tail_bonus", 150.0) or 150.0)
+        if features.get("can_finish_within_horizon", False) and 0.0 <= slack <= tail_slack:
+            return tail_bonus * (1.0 - slack / tail_slack)
+        return 0.0
+
+    tail_slack = max(float(CONFIG.get("phase2_tail_slack", 800.0) or 800.0), 1.0)
+    tail_bonus = float(CONFIG.get("phase2_tail_bonus", 500.0) or 500.0)
+    late_slack = max(float(CONFIG.get("phase2_late_slack", 100.0) or 100.0), 1.0)
+    late_bonus = float(CONFIG.get("phase2_late_bonus", 120.0) or 120.0)
+    slack_penalty = float(CONFIG.get("phase2_slack_penalty", 0.0) or 0.0)
+    slack_cap = float(CONFIG.get("phase2_slack_cap", 5000.0) or 5000.0)
+    not_finishable_penalty = float(CONFIG.get("phase2_not_finishable_penalty", 300.0) or 300.0)
+
+    if 0.0 <= slack <= tail_slack:
+        return tail_bonus * (1.0 - slack / tail_slack)
+    if slack < 0.0:
+        if slack >= -late_slack:
+            return late_bonus * (1.0 + slack / late_slack)
+        return -not_finishable_penalty
+    return -min(slack - tail_slack, slack_cap) * slack_penalty
+
+
+def score_phase1(features: dict) -> float | None:
+    task_weight = float(features.get("task_weight", 0.0) or 0.0)
+    remaining_nonbatch_time = max(float(features.get("remaining_nonbatch_time", 1.0) or 1.0), 1.0)
+    setup_time = float(features.get("setup_time", 0.0) or 0.0)
+
+    score = task_weight / remaining_nonbatch_time * float(CONFIG.get("score_density", 22000.0))
+    score += _tail_margin_bonus(features, phase="phase1")
+    if features.get("same_family", False):
+        score += float(CONFIG.get("score_family", 680.0))
+    if features.get("zero_setup", False):
+        score += float(CONFIG.get("score_zero_setup", 480.0))
+    if setup_time > 0:
+        score -= setup_time * float(CONFIG.get("score_setup_per", 4.0))
+    return score
+
+
+def score_phase2(features: dict) -> float | None:
+    task_weight = float(features.get("task_weight", 0.0) or 0.0)
+    remaining_nonbatch_time = max(float(features.get("remaining_nonbatch_time", 1.0) or 1.0), 1.0)
+    setup_time = float(features.get("setup_time", 0.0) or 0.0)
+    upper_bound = float(features.get("upper_bound", float("inf")))
+    horizon = float(features.get("horizon", 24480.0) or 24480.0)
+    current_time = float(features.get("current_time", 0.0) or 0.0)
+
+    score = _tail_margin_bonus(features, phase="phase2")
+    if features.get("started", False):
+        score += float(CONFIG.get("phase2_started", 2200.0))
+    if features.get("same_family", False):
+        score += float(CONFIG.get("phase2_family", 780.0))
+    if features.get("zero_setup", False):
+        score += float(CONFIG.get("phase2_zero_setup", 380.0))
+
+    density = task_weight / remaining_nonbatch_time
+    score += density * float(CONFIG.get("phase2_density", 6750.0))
     if setup_time > 0:
         score -= setup_time * float(CONFIG.get("phase2_setup_per", 4.5))
 
@@ -1838,6 +2196,8 @@ def strategy_hook_source(score_hook_template: str) -> str:
 
     if score_hook_template == "lowsetup_load_balance":
         return lowsetup_load_balance_hook_source()
+    if score_hook_template == "lowsetup_tail_margin":
+        return lowsetup_tail_margin_hook_source()
     if score_hook_template == "completion_efficiency":
         return completion_efficiency_hook_source()
     return default_hook_source()
