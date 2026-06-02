@@ -1267,6 +1267,214 @@ def candidate_policy_library(features: dict[str, Any], track: str, target_setup:
         ),
         candidate_from(
             base,
+            candidate_id="case1_near_late_process_tail_bonus",
+            label="算例1近迟到末工序奖励模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+                "process_bonus": {
+                    "YT0952:10": 2400.0,
+                    "YT0930:10": 2000.0,
+                    "YT0459:9": 2600.0,
+                },
+                "phase1_process_bonus_mult": 0.0,
+                "phase2_process_bonus_mult": 0.22,
+                "phase2_process_bonus_after": 18000.0,
+            },
+            reasons=[
+                "低切换最优解中 YT0952/YT0930/YT0459 分别仅晚 10/17/48 分钟。",
+                "只奖励末工序而不是整条任务链，测试能否以最小扰动跨过 18500。",
+            ],
+            prior_reward=18414.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "新增 process_bonus 工序级奖励，只在指定工序成为可行动作后生效。",
+                "二阶段按候选开始时间开启奖励，避免早期主序列被临界任务打乱。",
+            ],
+            removed_rules=[
+                "不使用整链 task_bonus，避免早期工序抢占低切换主结构。",
+            ],
+            kept_rules=[
+                "保留低切换模板的同族连续、零 setup、setup 惩罚和组批等待设置。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="case1_near_late_chain_process_bonus",
+            label="算例1近迟到链路+末工序联合奖励模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+                "task_bonus": {
+                    "YT0952": 900.0,
+                    "YT0930": 900.0,
+                    "YT0459": 1400.0,
+                },
+                "process_bonus": {
+                    "YT0952:10": 1800.0,
+                    "YT0930:10": 1600.0,
+                    "YT0459:9": 2200.0,
+                },
+                "phase1_task_bonus_mult": 0.03,
+                "phase2_task_bonus_mult": 0.12,
+                "phase2_task_bonus_after": 17000.0,
+                "phase1_process_bonus_mult": 0.0,
+                "phase2_process_bonus_mult": 0.16,
+                "phase2_process_bonus_after": 18000.0,
+            },
+            reasons=[
+                "高产桥接解显示这些任务不是只差末工序，而是整条后半链路更早进入瓶颈设备。",
+                "用很小的一阶段整链奖励配合较强末工序奖励，测试是否能提前闭环但不突破 500 setup。",
+            ],
+            prior_reward=18413.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "任务级奖励按候选开始时间开启，不再使用算例起点时间。",
+                "整链奖励幅度保持很小，主要依靠末工序奖励完成边界试探。",
+            ],
+            removed_rules=[
+                "不放松全局 setup 惩罚，不复制高 setup 桥接解。",
+            ],
+            kept_rules=[
+                "保留低切换主模板与有限组批 same-family mixed-time 策略。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="case1_y0952_force_tail_machine",
+            label="算例1YT0952末工序设备定向模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+                "force_machine": {"YT0952:10": "1#纵剪"},
+                "process_bonus": {"YT0952:10:1#纵剪": 3200.0},
+                "phase1_process_bonus_mult": 0.0,
+                "phase2_process_bonus_mult": 0.24,
+                "phase2_process_bonus_after": 18000.0,
+            },
+            reasons=[
+                "低切换解中 YT0952 的末工序晚 10 分钟且落在 2#纵剪；桥接解选择 1#纵剪并提前完成。",
+                "用 JSON 安全的 force_machine 字符串键测试末设备改派是否足以带来一个任务入窗。",
+            ],
+            prior_reward=18412.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "新增局部设备定向：仅约束 YT0952 的第 10 道工序候选设备。",
+                "设备定向仍经过固定内核候选设备合法性过滤。",
+            ],
+            removed_rules=[
+                "不强制整条路径，不吸收完整解结构。",
+            ],
+            kept_rules=[
+                "保留低切换评分主结构，仅测试一个末端机器分歧。",
+            ],
+        ),
+        candidate_from(
+            base,
+            candidate_id="lowsetup_lastop_slack_micro",
+            label="通用末工序临界窗口模板",
+            updates={
+                "lookahead": 90,
+                "start_guard": 120,
+                "score_density": 22500.0,
+                "phase2_density": 6750.0,
+                "score_family": 700.0,
+                "phase2_family": 800.0,
+                "score_progress": 120.0,
+                "phase2_progress": 80.0,
+                "score_zero_setup": 500.0,
+                "phase2_zero_setup": 420.0,
+                "score_setup_fixed": 500.0,
+                "phase2_setup_fixed": 610.0,
+                "score_setup_per": 4.2,
+                "phase2_setup_per": 4.7,
+                "batch_group_wait": 300 if finite else 0,
+                "batch_group_mixed_time": True if finite else False,
+                "phase2_hook_density": 76.0,
+                "phase2_urgency_threshold": 0.65,
+                "phase2_urgency_bonus": 420.0,
+                "phase2_upper_bound_bonus": 220.0,
+                "phase2_batch_bonus": 140.0,
+                "phase2_lastop_bonus_after": 17000.0,
+                "phase2_lastop_late_slack": 90.0,
+                "phase2_lastop_early_slack": 140.0,
+                "phase2_lastop_bonus": 360.0,
+            },
+            reasons=[
+                "把人工观察到的近迟到末工序现象抽象成不依赖任务 ID 的规则片段。",
+                "仅在最后一道工序且预计完工贴近 horizon 时奖励，避免尾部边际规则扩散到整条链。",
+            ],
+            prior_reward=18412.0,
+            score_hook_template="lowsetup_load_balance",
+            added_rules=[
+                "通用 phase2_lastop_* 临界窗口奖励，可迁移到未知新算例。",
+            ],
+            removed_rules=[
+                "不使用任务 ID、工序 ID 或强制设备。",
+            ],
+            kept_rules=[
+                "保留低切换主模板和固定内核可行动作过滤。",
+            ],
+        ),
+        candidate_from(
+            base,
             candidate_id="historical_bridge_588",
             label="历史桥接模板",
             updates={
@@ -2023,6 +2231,36 @@ def lowsetup_load_balance_hook_source() -> str:
     """生成历史低切换候选对应的安全评分钩子代码。"""
 
     return '''
+def _configured_process_bonus(features: dict) -> float:
+    """读取可选的工序级奖励。
+
+    任务级 task_bonus 会影响同一工件的整条工序链。对于只差几十分钟的临界
+    工件，整链奖励有时会扰动早期主序列；工序级奖励只在指定工序成为可行动作
+    后生效，更适合做低切换边界上的小步试探。
+    """
+
+    task_id = str(features.get("task_id", ""))
+    process_seq = str(features.get("process_seq", ""))
+    machine_id = str(features.get("machine_id", ""))
+    process_index = int(features.get("process_index", 0) or 0)
+    process_count = int(features.get("process_count", 0) or 0)
+    is_last = process_count > 0 and process_index == process_count - 1
+    bonus_map = CONFIG.get("process_bonus") or {}
+    keys = [
+        f"{task_id}:{process_seq}:{machine_id}",
+        f"{task_id}:{process_seq}",
+    ]
+    if is_last:
+        keys.extend([
+            f"{task_id}:last:{machine_id}",
+            f"{task_id}:last",
+        ])
+    for key in keys:
+        if key in bonus_map:
+            return float(bonus_map.get(key, 0.0) or 0.0)
+    return 0.0
+
+
 def score_path(features: dict) -> float | None:
     task_weight = float(features.get("task_weight", 0.0) or 0.0)
     task_priority = float(features.get("task_priority", 1.0) or 1.0)
@@ -2052,10 +2290,13 @@ def score_phase1(features: dict) -> float | None:
     horizon = float(features.get("horizon", 24480.0) or 24480.0)
     current_time = float(features.get("current_time", 0.0) or 0.0)
     task_bonus = float((CONFIG.get("task_bonus") or {}).get(str(features.get("task_id", "")), 0.0) or 0.0)
+    process_bonus = _configured_process_bonus(features)
     phase1_task_bonus_mult = float(CONFIG.get("phase1_task_bonus_mult", 0.0) or 0.0)
+    phase1_process_bonus_mult = float(CONFIG.get("phase1_process_bonus_mult", 0.0) or 0.0)
 
     score = task_weight / remaining_nonbatch_time * float(CONFIG.get("score_density", 22000.0))
     score += task_bonus * phase1_task_bonus_mult
+    score += process_bonus * phase1_process_bonus_mult
     if features.get("same_family", False):
         score += float(CONFIG.get("score_family", 680.0))
     if features.get("zero_setup", False):
@@ -2076,12 +2317,27 @@ def score_phase2(features: dict) -> float | None:
     upper_bound = float(features.get("upper_bound", float("inf")))
     horizon = float(features.get("horizon", 24480.0) or 24480.0)
     current_time = float(features.get("current_time", 0.0) or 0.0)
+    candidate_start = float(features.get("start", current_time) or current_time)
     task_bonus = float((CONFIG.get("task_bonus") or {}).get(str(features.get("task_id", "")), 0.0) or 0.0)
+    process_bonus = _configured_process_bonus(features)
 
     score = 0.0
     task_bonus_after = float(CONFIG.get("phase2_task_bonus_after", 0.0) or 0.0)
-    if current_time >= task_bonus_after:
+    if candidate_start >= task_bonus_after:
         score += task_bonus * float(CONFIG.get("phase2_task_bonus_mult", 0.0))
+    process_bonus_after = float(CONFIG.get("phase2_process_bonus_after", task_bonus_after) or 0.0)
+    if candidate_start >= process_bonus_after:
+        score += process_bonus * float(CONFIG.get("phase2_process_bonus_mult", 0.0))
+    process_index = int(features.get("process_index", 0) or 0)
+    process_count = int(features.get("process_count", 0) or 0)
+    if process_count > 0 and process_index == process_count - 1:
+        lastop_after = float(CONFIG.get("phase2_lastop_bonus_after", 0.0) or 0.0)
+        if candidate_start >= lastop_after:
+            slack = float(features.get("slack_to_horizon", 0.0) or 0.0)
+            late_slack = float(CONFIG.get("phase2_lastop_late_slack", 0.0) or 0.0)
+            early_slack = float(CONFIG.get("phase2_lastop_early_slack", 0.0) or 0.0)
+            if -late_slack <= slack <= early_slack:
+                score += float(CONFIG.get("phase2_lastop_bonus", 0.0) or 0.0)
     if features.get("started", False):
         score += float(CONFIG.get("phase2_started", 2200.0))
     if features.get("same_family", False):

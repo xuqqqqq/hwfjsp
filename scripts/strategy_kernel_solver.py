@@ -145,13 +145,40 @@ def coerce_config(raw: dict[str, Any]) -> dict[str, Any]:
         config[key] = value
     config["path_machine_penalty"] = dict(config.get("path_machine_penalty") or {})
     config["force_path"] = dict(config.get("force_path") or {})
-    config["force_machine"] = dict(config.get("force_machine") or {})
+    config["force_machine"] = normalize_force_machine_map(config.get("force_machine") or {})
     config["task_bonus"] = dict(config.get("task_bonus") or {})
     config["defer_task"] = set(config.get("defer_task") or set())
     config["lookahead"] = int(config["lookahead"])
     config["start_guard"] = int(config["start_guard"])
     config["batch_group_wait"] = int(config["batch_group_wait"])
     return config
+
+
+def normalize_force_machine_map(raw: dict[Any, Any]) -> dict[tuple[str, str], str]:
+    """把策略配置中的强制设备映射统一为 `(task_id, seq) -> machine_id`。
+
+    Python 策略文件可以天然表达 tuple 键，但推荐器还会把配置写入 JSON
+    经验文件；JSON 只能保存字符串键。因此这里同时接受两种写法：
+
+    - `("YT0952", "10"): "1#纵剪"`
+    - `"YT0952:10": "1#纵剪"`
+
+    归一化只改变配置表示形式，不放宽任何可行动作过滤；如果被强制的设备
+    不是该工序候选设备，固定内核会直接判为不可行动作并回退到其他候选。
+    """
+
+    result: dict[tuple[str, str], str] = {}
+    for key, value in dict(raw).items():
+        if isinstance(key, tuple) and len(key) == 2:
+            task_id, seq = str(key[0]).strip(), str(key[1]).strip()
+        elif isinstance(key, str) and ":" in key:
+            task_id, seq = (part.strip() for part in key.split(":", 1))
+        else:
+            continue
+        machine_id = str(value).strip()
+        if task_id and seq and machine_id:
+            result[(task_id, seq)] = machine_id
+    return result
 
 
 def default_cache_paths(root: Path, input_path: Path, track: str, strategy_path: Path) -> tuple[Path, Path]:
@@ -647,7 +674,31 @@ def write_summary(path: Path | None, summary: dict[str, Any]) -> None:
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(json_ready(summary), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def json_ready(value: Any) -> Any:
+    """递归转换为 JSON 可序列化对象。
+
+    策略内核内部会使用 tuple 键表示 `(task_id, seq)` 这类复合索引；摘要文件
+    面向实验复盘和策略学习，需要使用 JSON，因此这里把 tuple 键转换成
+    `task_id:seq` 形式。该转换只影响日志输出，不影响求解时的内部映射。
+    """
+
+    if isinstance(value, dict):
+        payload: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, tuple):
+                out_key = ":".join(str(part) for part in key)
+            else:
+                out_key = str(key)
+            payload[out_key] = json_ready(item)
+        return payload
+    if isinstance(value, (list, tuple, set)):
+        return [json_ready(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def main() -> int:
@@ -774,7 +825,7 @@ def main() -> int:
         "sample_errors": errors[:40],
     }
     write_summary(summary_path, summary)
-    print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
+    print(json.dumps(json_ready(summary), ensure_ascii=False, indent=2), flush=True)
     return 0 if not errors else 1
 
 
