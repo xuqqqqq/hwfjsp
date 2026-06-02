@@ -61,12 +61,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--policy-mode",
-        choices=("heuristic", "supervised", "bandit", "ppo"),
+        choices=("heuristic", "supervised", "bandit", "ppo", "network"),
         default="bandit",
         help=(
             "策略选择模式。heuristic 使用固定经验规则；supervised 使用相似历史样本；"
-            "bandit 使用 UCB/epsilon 探索；ppo 使用模板级 PPO-style softmax 策略。"
+            "bandit 使用 UCB/epsilon 探索；ppo 使用模板级 PPO-style softmax 策略；"
+            "network 使用离线训练的策略网络 JSON。"
         ),
+    )
+    parser.add_argument(
+        "--network-model",
+        type=Path,
+        default=Path("outputs/rl_policy_recommender/policy_network.json"),
+        help="policy-mode=network 时读取的策略网络 JSON 模型。",
+    )
+    parser.add_argument(
+        "--force-candidate-id",
+        default="",
+        help="直接指定候选模板 ID，用于定向实验；为空时由 policy-mode 自动选择。",
     )
     parser.add_argument(
         "--policy-state",
@@ -823,6 +835,26 @@ def select_heuristic(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     )
 
 
+def select_forced(candidates: list[dict[str, Any]], candidate_id: str) -> dict[str, Any]:
+    """直接选择指定候选模板。"""
+
+    for candidate in candidates:
+        if candidate["candidate_id"] == candidate_id:
+            return with_selection_info(
+                candidate,
+                mode="forced",
+                details={"reason": "命令行 force-candidate-id 指定模板。"},
+            )
+    selected = select_heuristic(candidates)
+    selected["policy_mode"] = "forced"
+    selected["selection_info"] = {
+        "reason": "force-candidate-id 未命中候选库，回退 balanced_safe。",
+        "requested_candidate_id": candidate_id,
+        "available_candidate_ids": [item["candidate_id"] for item in candidates],
+    }
+    return selected
+
+
 def select_supervised(
     candidates: list[dict[str, Any]],
     features: dict[str, Any],
@@ -1017,6 +1049,84 @@ def select_ppo(
     )
 
 
+def matvec(matrix: list[list[float]], vector: list[float], bias: list[float]) -> list[float]:
+    """计算 y = matrix * vector + bias。"""
+
+    output: list[float] = []
+    for row, b_value in zip(matrix, bias):
+        output.append(sum(weight * value for weight, value in zip(row, vector)) + b_value)
+    return output
+
+
+def relu(vector: list[float]) -> list[float]:
+    """ReLU 激活函数。"""
+
+    return [max(0.0, value) for value in vector]
+
+
+def select_network(
+    candidates: list[dict[str, Any]],
+    features: dict[str, Any],
+    *,
+    model_path: Path,
+) -> dict[str, Any]:
+    """使用离线训练的策略网络选择候选模板。"""
+
+    model = load_json(model_path, {})
+    if not isinstance(model, dict) or not model.get("candidate_ids"):
+        selected = select_heuristic(candidates)
+        selected["policy_mode"] = "network"
+        selected["selection_info"] = {
+            "reason": "策略网络模型不存在或格式无效，回退 balanced_safe。",
+            "fallback": "heuristic",
+            "model_path": str(model_path),
+        }
+        return selected
+
+    candidate_by_id = {item["candidate_id"]: item for item in candidates}
+    candidate_ids = [candidate_id for candidate_id in model["candidate_ids"] if candidate_id in candidate_by_id]
+    if not candidate_ids:
+        selected = select_heuristic(candidates)
+        selected["policy_mode"] = "network"
+        selected["selection_info"] = {
+            "reason": "模型候选集合与当前候选库不匹配，回退 balanced_safe。",
+            "fallback": "heuristic",
+            "model_path": str(model_path),
+        }
+        return selected
+
+    keys = model.get("feature_keys", FEATURE_VECTOR_KEYS)
+    scales = model.get("feature_scales", FEATURE_SCALES)
+    vector: list[float] = []
+    for key in keys:
+        scale = float(scales.get(key, 1.0) or 1.0)
+        vector.append(max(0.0, min(3.0, num(features.get(key), 0.0) / scale)))
+
+    weights = model.get("weights", {})
+    hidden = relu(matvec(weights["w1"], vector, weights["b1"]))
+    scores = matvec(weights["w2"], hidden, weights["b2"])
+    model_candidate_ids = list(model["candidate_ids"])
+    score_by_id = {
+        candidate_id: float(scores[index])
+        for index, candidate_id in enumerate(model_candidate_ids)
+        if index < len(scores) and candidate_id in candidate_by_id
+    }
+    selected_id = max(candidate_ids, key=lambda candidate_id: score_by_id.get(candidate_id, float("-inf")))
+    selected = candidate_by_id[selected_id]
+    ranked = sorted(score_by_id.items(), key=lambda item: item[1], reverse=True)
+    return with_selection_info(
+        selected,
+        mode="network",
+        details={
+            "reason": "使用离线训练的策略网络选择 score 最高的安全模板。",
+            "model_path": str(model_path),
+            "selected_score": round(score_by_id[selected_id], 6),
+            "ranked_scores": [(candidate_id, round(score, 6)) for candidate_id, score in ranked],
+            "training_summary": model.get("training_summary", {}),
+        },
+    )
+
+
 def recommend_policy(
     features: dict[str, Any],
     track: str,
@@ -1029,6 +1139,8 @@ def recommend_policy(
     bandit_explore: float = 180.0,
     bandit_epsilon: float = 0.05,
     ppo_temperature: float = 1.0,
+    network_model: Path | None = None,
+    force_candidate_id: str = "",
 ) -> dict[str, Any]:
     """根据策略模式选择参数/规则模板。"""
 
@@ -1037,12 +1149,20 @@ def recommend_policy(
     history = experiences or []
     local_rng = rng or random.Random(20260602)
 
+    if force_candidate_id:
+        return select_forced(candidates, force_candidate_id)
     if policy_mode == "heuristic":
         return select_heuristic(candidates)
     if policy_mode == "supervised":
         return select_supervised(candidates, features, history)
     if policy_mode == "ppo":
         return select_ppo(candidates, state, temperature=ppo_temperature, rng=local_rng)
+    if policy_mode == "network":
+        return select_network(
+            candidates,
+            features,
+            model_path=network_model or Path("outputs/rl_policy_recommender/policy_network.json"),
+        )
     return select_bandit(
         candidates,
         state,
@@ -1325,6 +1445,7 @@ def main() -> int:
     input_path = resolve_path(root, args.input)
     output_dir = resolve_path(root, args.output_dir)
     policy_state_path = resolve_path(root, args.policy_state)
+    network_model_path = resolve_path(root, args.network_model)
     experience_sources = [resolve_path(root, path) for path in args.experience_source]
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1344,6 +1465,8 @@ def main() -> int:
         bandit_explore=args.bandit_explore,
         bandit_epsilon=args.bandit_epsilon,
         ppo_temperature=args.ppo_temperature,
+        network_model=network_model_path,
+        force_candidate_id=args.force_candidate_id.strip(),
     )
     strategy_path = output_dir / "recommended_strategy.py"
     strategy_path.write_text(strategy_source(recommendation), encoding="utf-8")
